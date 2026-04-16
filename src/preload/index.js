@@ -28,6 +28,9 @@ const api = {
     close: () => electronAPI.ipcRenderer.invoke('window:close'),
     isMaximized: () => electronAPI.ipcRenderer.invoke('window:is-maximized')
   },
+  app: {
+    getVersion: () => electronAPI.ipcRenderer.invoke('app:get-version')
+  },
   updater
 }
 

@@ -83,16 +83,51 @@ async function initUpdateModeFromPolicy() {
 }
 
 function wireAutoUpdater(mainWindow) {
-  if (is.dev) return
-
-  autoUpdater.autoInstallOnAppQuit = true
-  autoUpdater.autoDownload = UPDATE_MODE === 'force'
+  // 开发环境也要注册 IPC（否则渲染进程 invoke('update:check') 会报 No handler registered）
+  // 仅在非 dev 时真正连接 electron-updater 能力。
 
   const send = (channel, payload) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, payload)
     }
   }
+
+  // UI 按钮调用的 IPC：开发环境给出友好提示
+  ipcMain.handle('update:check', async () => {
+    if (is.dev) {
+      send('update:error', '开发环境未启用自动更新（electron-updater）')
+      return false
+    }
+    await autoUpdater.checkForUpdates()
+    return true
+  })
+
+  ipcMain.handle('update:download', async () => {
+    if (is.dev) {
+      send('update:error', '开发环境未启用自动更新（electron-updater）')
+      return false
+    }
+    try {
+      await autoUpdater.downloadUpdate()
+      return true
+    } catch (e) {
+      throw new Error(e?.message || String(e))
+    }
+  })
+
+  ipcMain.handle('update:install', async () => {
+    if (is.dev) {
+      send('update:error', '开发环境未启用自动更新（electron-updater）')
+      return false
+    }
+    autoUpdater.quitAndInstall(false, true)
+    return true
+  })
+
+  if (is.dev) return
+
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoDownload = UPDATE_MODE === 'force'
 
   autoUpdater.on('checking-for-update', () => send('update:checking'))
   autoUpdater.on('update-available', async (info) => {
@@ -139,29 +174,7 @@ function wireAutoUpdater(mainWindow) {
     }
   })
 
-  // 给渲染进程的控制能力（UI 更新模式使用）
-  // update:mode / update:policy 已在文件顶部注册，这里不要重复注册
-
-  ipcMain.handle('update:check', async () => {
-    await autoUpdater.checkForUpdates()
-    return true
-  })
-
-  // 兼容处理：某些依赖组合下 downloadUpdate 可能抛 retry not a function
-  ipcMain.handle('update:download', async () => {
-    try {
-      await autoUpdater.downloadUpdate()
-      return true
-    } catch (e) {
-      // 直接把错误抛给渲染进程展示
-      throw new Error(e?.message || String(e))
-    }
-  })
-
-  ipcMain.handle('update:install', async () => {
-    autoUpdater.quitAndInstall(false, true)
-    return true
-  })
+  // 渲染进程控制能力的 IPC 已在函数开头注册（含 dev 兼容），这里不再重复注册
 
   autoUpdater.checkForUpdates().catch(() => {})
 }
@@ -182,6 +195,9 @@ app.whenReady().then(async () => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+
+  // 软件版本号（给版本页显示用）
+  ipcMain.handle('app:get-version', () => app.getVersion())
 
   // 窗口控制（给自定义页眉按钮用）
   ipcMain.handle('window:minimize', () => {

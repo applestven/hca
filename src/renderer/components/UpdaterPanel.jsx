@@ -14,7 +14,7 @@ const humanBytes = (bytes) => {
     return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-export default function UpdaterPanel() {
+export default function UpdaterPanel({ showShell = true } = {}) {
     const hasUpdater = useMemo(() => typeof window !== 'undefined' && window.api?.updater, [])
     const [mode, setMode] = useState('ui')
     const [policy, setPolicy] = useState(null)
@@ -70,6 +70,33 @@ export default function UpdaterPanel() {
     if (!hasUpdater) return null
     if (mode === 'force') return null
 
+    const wrapStatus = (s) => {
+        switch (s) {
+            case 'idle':
+                return '空闲'
+            case 'checking':
+                return '检查中'
+            case 'available':
+                return '发现更新'
+            case 'not-available':
+                return '已是最新'
+            case 'downloading':
+                return '下载中'
+            case 'downloaded':
+                return '已下载'
+            case 'error':
+                return '错误'
+            default:
+                return String(s || '')
+        }
+    }
+
+    const currentVersion =
+        info?.currentVersion ??
+        info?.version ??
+        window.api?.app?.getVersion?.() ??
+        window.electron?.process?.versions?.app
+
     const onCheck = async () => {
         try {
             await window.api.updater.check()
@@ -97,6 +124,35 @@ export default function UpdaterPanel() {
         }
     }
 
+    if (!showShell) {
+        return (
+            <div className="space-y-3">
+                {policy?.message ? <div className="text-sm">{String(policy.message)}</div> : null}
+                <div className="text-sm text-muted-foreground">状态：{wrapStatus(status)}</div>
+                {message ? <div className="text-sm">{message}</div> : null}
+                {info?.releaseNotes ? (
+                    <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs">{String(info.releaseNotes)}</pre>
+                ) : null}
+                {progress ? (
+                    <div className="text-xs text-muted-foreground">
+                        已下载：{humanBytes(progress?.transferred)} / {humanBytes(progress?.total)}
+                    </div>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" onClick={onCheck}>
+                        检查更新
+                    </Button>
+                    <Button onClick={onDownload} disabled={status !== 'available'}>
+                        下载更新
+                    </Button>
+                    <Button variant="destructive" onClick={onInstall} disabled={status !== 'downloaded'}>
+                        安装并重启
+                    </Button>
+                </div>
+            </div>
+        )
+    }
+
     return (
         <Card className="mt-4">
             <CardHeader>
@@ -104,7 +160,7 @@ export default function UpdaterPanel() {
             </CardHeader>
             <CardContent className="space-y-3">
                 {policy?.message ? <div className="text-sm">{String(policy.message)}</div> : null}
-                <div className="text-sm text-muted-foreground">状态：{status}</div>
+                <div className="text-sm text-muted-foreground">状态：{wrapStatus(status)}</div>
                 {message ? <div className="text-sm">{message}</div> : null}
                 {info?.releaseNotes ? (
                     <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs">{String(info.releaseNotes)}</pre>

@@ -82,12 +82,13 @@ export default function AppHeader({ title = 'Electron App', hideHeaderPaths = ['
             style={hidden ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
             aria-hidden={hidden}
         >
-            {/* 左侧：导航（no-drag）- 已隐藏 */}
-            {/* <div className="flex items-center gap-1 pl-2" style={{ WebkitAppRegion: 'no-drag' }}>
+            {/* 左侧：导航（no-drag） */}
+            <div className="flex items-center gap-1 pl-2" style={{ WebkitAppRegion: 'no-drag' }}>
                 <Button variant="ghost" className={navBtn} onClick={() => go('/')}>首页</Button>
+                <Button variant="ghost" className={navBtn} onClick={() => go('/version')}>版本</Button>
                 <Button variant="ghost" className={navBtn} onClick={() => go('/login')}>登录</Button>
                 <div className="mx-1 h-5 w-px bg-white/15" />
-            </div> */}
+            </div>
 
             {/* 中间：拖拽区 */}
             <div
