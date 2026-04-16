@@ -31,6 +31,27 @@ const api = {
   app: {
     getVersion: () => electronAPI.ipcRenderer.invoke('app:get-version')
   },
+  device: {
+    list: () => electronAPI.ipcRenderer.invoke('device:list'),
+    connectWifi: (ip, port) => electronAPI.ipcRenderer.invoke('device:connect-wifi', { ip, port }),
+    disconnect: (serial) => electronAPI.ipcRenderer.invoke('device:disconnect', { serial }),
+    scrcpyStart: (serial) => electronAPI.ipcRenderer.invoke('device:scrcpy:start', { serial }),
+    tap: (serial, x, y) => electronAPI.ipcRenderer.invoke('device:tap', { serial, x, y }),
+    swipe: (serial, x1, y1, x2, y2, durationMs) =>
+      electronAPI.ipcRenderer.invoke('device:swipe', { serial, x1, y1, x2, y2, durationMs }),
+    text: (serial, text) => electronAPI.ipcRenderer.invoke('device:text', { serial, text }),
+    keyevent: (serial, keyCode) => electronAPI.ipcRenderer.invoke('device:keyevent', { serial, keyCode }),
+    startApp: (serial, pkg, activity) =>
+      electronAPI.ipcRenderer.invoke('device:start-app', { serial, pkg, activity }),
+    reconnect: (serial) => electronAPI.ipcRenderer.invoke('device:reconnect', { serial }),
+    scanRange: (range, port, options) =>
+      electronAPI.ipcRenderer.invoke('device:scan-range', {
+        range,
+        port,
+        concurrency: options?.concurrency,
+        pingFirst: options?.pingFirst
+      })
+  },
   updater
 }
 

@@ -6,6 +6,21 @@ process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
 import initIpc from '../utils/initIpc'
 import { autoUpdater } from 'electron-updater'
 import { isVersionLessThan, loadUpdatePolicy, getUpdateBaseUrl } from './utils/updatePolicy'
+import {
+  adbListDevices,
+  adbConnect,
+  spawnScrcpy,
+  adbKillServer,
+  adbStartServer,
+  adbDisconnect,
+  adbTap,
+  adbSwipe,
+  adbInputText,
+  adbKeyEvent,
+  adbStartApp,
+  adbScanIpRange,
+  adbReconnectSmart
+} from './utils/adb'
 
 // 更新模式：ui（手动） | force（强制）
 // 优先走更新服务器策略（policy.json），拉取失败再回退到环境变量
@@ -217,6 +232,79 @@ app.whenReady().then(async () => {
   ipcMain.handle('window:is-maximized', () => {
     const win = BrowserWindow.getFocusedWindow()
     return win?.isMaximized() ?? false
+  })
+
+  // 设备中控：ADB/Scrcpy
+  ipcMain.handle('device:list', async () => {
+    const list = await adbListDevices()
+    return list
+  })
+
+  ipcMain.handle('device:connect-wifi', async (_e, { ip, port } = {}) => {
+    if (!ip) throw new Error('ip is required')
+    const out = await adbConnect(ip, port ?? 5555)
+    return out
+  })
+
+  ipcMain.handle('device:scrcpy:start', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+
+    // 先做“启动即可”，后续再做：进程列表管理/退出/复用/窗口嵌入
+    const child = spawnScrcpy({ serial, windowTitle: `HCA - ${serial}` })
+    return { pid: child.pid }
+  })
+
+  // ADB 管理
+  ipcMain.handle('adb:restart', async () => {
+    await adbKillServer().catch(() => {})
+    const out = await adbStartServer().catch(() => '')
+    return out
+  })
+
+  ipcMain.handle('device:disconnect', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    const out = await adbDisconnect(serial)
+    return out
+  })
+
+  ipcMain.handle('device:tap', async (_e, { serial, x, y } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await adbTap(serial, x, y)
+  })
+
+  ipcMain.handle('device:swipe', async (_e, { serial, x1, y1, x2, y2, durationMs } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await adbSwipe(serial, x1, y1, x2, y2, durationMs)
+  })
+
+  ipcMain.handle('device:text', async (_e, { serial, text } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await adbInputText(serial, text)
+  })
+
+  ipcMain.handle('device:keyevent', async (_e, { serial, keyCode } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await adbKeyEvent(serial, keyCode)
+  })
+
+  ipcMain.handle('device:start-app', async (_e, { serial, pkg, activity } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    if (!pkg) throw new Error('pkg is required')
+    return await adbStartApp(serial, pkg, activity)
+  })
+
+  ipcMain.handle('device:scan-range', async (_e, { range, port, concurrency, pingFirst } = {}) => {
+    const r = await adbScanIpRange(range, {
+      port: port ?? 5555,
+      concurrency: concurrency ?? 50,
+      pingFirst: pingFirst ?? true
+    })
+    return r
+  })
+
+  ipcMain.handle('device:reconnect', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await adbReconnectSmart(serial)
   })
 
   await initUpdateModeFromPolicy()

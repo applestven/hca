@@ -85,6 +85,7 @@ export default function AppHeader({ title = 'Electron App', hideHeaderPaths = ['
             {/* 左侧：导航（no-drag） */}
             <div className="flex items-center gap-1 pl-2" style={{ WebkitAppRegion: 'no-drag' }}>
                 <Button variant="ghost" className={navBtn} onClick={() => go('/')}>首页</Button>
+                <Button variant="ghost" className={navBtn} onClick={() => go('/device-control')}>设备中控</Button>
                 <Button variant="ghost" className={navBtn} onClick={() => go('/version')}>版本</Button>
                 <Button variant="ghost" className={navBtn} onClick={() => go('/login')}>登录</Button>
                 <div className="mx-1 h-5 w-px bg-white/15" />

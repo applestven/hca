@@ -5,6 +5,7 @@ import AppLayout from '@/layouts/AppLayout'
 const Login = lazy(() => import('@/views/login'))
 const Home = lazy(() => import('@/views/home'))
 const Version = lazy(() => import('@/views/version'))
+const DeviceControl = lazy(() => import('@/views/device-control'))
 
 const router = createHashRouter([
     {
@@ -14,6 +15,10 @@ const router = createHashRouter([
             {
                 index: true,
                 element: <Home />
+            },
+            {
+                path: 'device-control',
+                element: <DeviceControl />
             },
             {
                 path: 'login',
