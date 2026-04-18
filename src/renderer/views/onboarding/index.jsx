@@ -84,6 +84,14 @@ export default function OnboardingPage() {
     refreshDevices().catch(() => {})
   }, [])
 
+  // 模拟器模式：优先自动选中 emulator-xxxx
+  useEffect(() => {
+    if (connMode !== 'emulator') return
+    if (selectedSerial) return
+    const emu = (devices || []).find((d) => /^emulator-\d+$/i.test(String(d.serial || '')) && d.state === 'device')
+    if (emu) setSelectedSerial(emu.serial)
+  }, [connMode, devices, selectedSerial])
+
   const selectedDevice = useMemo(() => {
     return devices.find((d) => d.serial === selectedSerial) || null
   }, [devices, selectedSerial])
@@ -323,7 +331,15 @@ export default function OnboardingPage() {
 
             {step === 2 && (
               <div className="space-y-3">
-                <div className="text-sm font-medium">USB 初始化（关键）</div>
+                <div className="text-sm font-medium">
+                  {connMode === 'emulator' ? '模拟器初始化（自动识别）' : 'USB 初始化（关键）'}
+                </div>
+                {connMode === 'emulator' && (
+                  <div className="text-xs text-muted-foreground">
+                    已进入“模拟器（自动识别）”流程：将优先识别并选择 <code className="px-1 rounded bg-muted">emulator-xxxx</code> 设备。
+                    若未识别到，请先启动 Android 模拟器（AVD/Genymotion 等），并确认 adb 可见。
+                  </div>
+                )}
                 <ol className="list-decimal pl-6 text-sm text-muted-foreground space-y-1">
                   <li>打开手机开发者模式</li>
                   <li>打开 USB 调试</li>
@@ -349,11 +365,23 @@ export default function OnboardingPage() {
                       onChange={(e) => setSelectedSerial(e.target.value)}
                     >
                       <option value="">请选择设备</option>
-                      {devices.map((d) => (
-                        <option key={d.serial} value={d.serial}>
-                          {d.model || d.serial} ({d.state})
-                        </option>
-                      ))}
+                      {(devices
+                        .slice()
+                        .sort((a, b) => {
+                          const ae = /^emulator-\d+$/i.test(String(a.serial || ''))
+                          const be = /^emulator-\d+$/i.test(String(b.serial || ''))
+                          if (connMode === 'emulator') {
+                            if (ae !== be) return ae ? -1 : 1
+                          }
+                          // online 优先
+                          if (a.state !== b.state) return a.state === 'device' ? -1 : 1
+                          return String(a.model || a.serial).localeCompare(String(b.model || b.serial))
+                        }))
+                        .map((d) => (
+                          <option key={d.serial} value={d.serial}>
+                            {d.model || d.serial} ({d.state})
+                          </option>
+                        ))}
                     </select>
 
                     {selectedDevice && (
@@ -585,8 +613,8 @@ export default function OnboardingPage() {
                   setStep((s) => {
                     // WiFi 模式：Step1 -> Step3（跳过 USB 初始化）
                     if (s === 1 && connMode === 'wifi') return 3
-                    // 模拟器：也直接进入 WiFi/配对页更合理（后续可单独加模拟器提示）
-                    if (s === 1 && connMode === 'emulator') return 3
+                    // 模拟器：通常直接走 ADB 直连（USB 初始化页），不需要 WiFi 调试
+                    if (s === 1 && connMode === 'emulator') return 2
                     return Math.min(6, s + 1)
                   })
                 }}
