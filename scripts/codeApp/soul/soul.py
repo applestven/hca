@@ -1,18 +1,35 @@
 import sys
+import os
 import time
 
 import uiautomator2 as u2
 
-import chatSoul as chatSoul
+# 同目录模块：确保无论从哪里启动，都优先使用当前脚本目录下的 chatSoul.py
+try:
+    from . import chatSoul  # type: ignore
+except Exception:
+    import chatSoul as chatSoul
+
 import common.getSoulMsg as getSoulMsg
 import common.utils as utils
 
-sys.stdout.reconfigure(encoding="utf-8")
+# 为什么调整：
+# - 某些 Python（或被 runner 启动的 console 环境）不支持 stdout.reconfigure，会直接抛异常导致脚本退出。
+# - 中控会给每个子进程注入 device(serial/ip:port)，原实现写死 connect_usb()，导致：
+#   1) 选了 WiFi 设备时连接不上
+#   2) 多设备并发时都连到同一台 USB
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 PACKAGE_NAME = "cn.soulapp.android"
 
 
 def connect_device():
+    serial = os.environ.get('device') or os.environ.get('HCA_DEVICE_SERIAL') or os.environ.get('ANDROID_SERIAL')
+    if serial:
+        return u2.connect(serial)
     return u2.connect_usb()
 
 

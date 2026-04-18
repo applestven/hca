@@ -1,11 +1,17 @@
 import { spawn } from 'child_process'
 import { join } from 'path'
+import fs from 'fs'
 
 function getScrcpyDir() {
-  // main 进程打包后 __dirname 在 out/main 下，bin 在项目根目录（dev）或 resources（packaged）
-  // 这里先按 dev 场景：main 文件在 src/main，运行时 __dirname 指向 out/main
-  // 采用 process.cwd() 相对最稳妥（electron-vite dev/build 都在项目根启动）
-  return join(process.cwd(), 'bin', 'scrcpy')
+  // dev：bin/scrcpy 在项目根目录
+  const devDir = join(process.cwd(), 'bin', 'scrcpy')
+
+  // packaged：被 electron-builder 作为 extraResources 带入后，位于 process.resourcesPath 下
+  const packagedDir = process.resourcesPath ? join(process.resourcesPath, 'bin', 'scrcpy') : ''
+
+  // 先用 packagedDir（若存在），否则回退 devDir
+  if (packagedDir && fs.existsSync(packagedDir)) return packagedDir
+  return devDir
 }
 
 function getAdbPath() {
@@ -15,6 +21,11 @@ function getAdbPath() {
 function runAdb(args, { timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const adbPath = getAdbPath()
+
+    if (!fs.existsSync(adbPath)) {
+      reject(new Error(`adb not found: ${adbPath}`))
+      return
+    }
 
     const child = spawn(adbPath, args, {
       windowsHide: true
@@ -131,11 +142,17 @@ export async function adbListDevices() {
 }
 
 export function getScrcpyPath() {
-  return join(getScrcpyDir(), process.platform === 'win32' ? 'scrcpy.exe' : 'scrcpy')
+  const dir = getScrcpyDir()
+  return join(dir, process.platform === 'win32' ? 'scrcpy.exe' : 'scrcpy')
 }
 
 export function spawnScrcpy({ serial, windowTitle } = {}) {
   const scrcpyPath = getScrcpyPath()
+
+  if (!fs.existsSync(scrcpyPath)) {
+    throw new Error(`scrcpy not found: ${scrcpyPath}`)
+  }
+
   const args = []
   if (serial) args.push('-s', serial)
   if (windowTitle) args.push('--window-title', windowTitle)
@@ -338,9 +355,25 @@ export async function adbScanIpRange(rangeText, { port = 5555, concurrency = 50,
   for (let i = start; i <= end; i++) {
     ips.push(intToIpv4(i))
     // 简单保护：避免误填 /16 一下扫爆
-    if (ips.length > 2048) break
+    if (ips.length > 4096) break
   }
 
-  const results = await adbConnectMany(ips, { port, concurrency, pingFirst })
-  return { startIp, endIp, count: ips.length, results }
+  const results = await scanIpList(
+    ips,
+    {
+      port,
+      concurrency,
+      pingFirst
+    },
+    async (ip, _idx) => {
+      try {
+        const out = await adbConnect(ip, port)
+        return { ok: true, message: out }
+      } catch (e) {
+        return { ok: false, message: e?.message || String(e) }
+      }
+    }
+  )
+
+  return results
 }

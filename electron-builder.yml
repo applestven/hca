@@ -16,6 +16,8 @@ extraResources:
     to: scripts
   - from: resources/python/
     to: python
+  - from: bin/scrcpy/
+    to: bin/scrcpy
 
 # 说明：resources/python 需包含 python.exe、python3*.dll、python._pth、Lib、Lib/site-packages
 

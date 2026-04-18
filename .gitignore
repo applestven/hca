@@ -3,3 +3,11 @@ dist
 out
 .DS_Store
 *.log*
+
+# bundled embedded python runtime helpers / third-party deps (generated)
+resources/python/get-pip.py
+resources/python/Lib/site-packages/
+resources/python/Lib/site-packages-codeapp/
+
+# optional wheel cache for offline installs
+scripts/codeApp/wheelhouse/

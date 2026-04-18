@@ -1,5 +1,10 @@
 python311.zip
 .
+Lib
+Lib\\site-packages
+Lib\\site-packages-codeapp
 
 # Uncomment to run site.main() automatically
-#import site
+import site
+
+Lib\site-packages

@@ -17,6 +17,25 @@ function nowTime() {
   return `${hh}:${mm}:${ss}`
 }
 
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+function serializeLogsToText(items) {
+  const logs = items || []
+  const header = ['time', 'device', 'action', 'result'].join('\t')
+  const lines = logs.map((l) => [l.time, l.device, l.action, String(l.result ?? '')].join('\t'))
+  return [header, ...lines].join('\r\n')
+}
+
 export default function DeviceControlPage() {
   const [devices, setDevices] = useState([])
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -374,6 +393,29 @@ export default function DeviceControlPage() {
         )
       })
   }, [logs, logOnlyError, logKeyword])
+
+  const copyVisibleLogs = async () => {
+    const text = serializeLogsToText(visibleLogs)
+    try {
+      await navigator.clipboard?.writeText(text)
+      pushLog('系统', '复制日志', `ok(${visibleLogs.length})`)
+    } catch (e) {
+      pushLog('系统', '复制日志', e?.message || 'failed')
+    }
+  }
+
+  const exportVisibleLogs = () => {
+    const text = serializeLogsToText(visibleLogs)
+    const ts = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    const name = `hca-device-control-logs-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.txt`
+    try {
+      downloadTextFile(name, text)
+      pushLog('系统', '导出日志', `ok(${visibleLogs.length})`)
+    } catch (e) {
+      pushLog('系统', '导出日志', e?.message || 'failed')
+    }
+  }
 
   useEffect(() => {
     if (!window.api?.device) {
@@ -1142,6 +1184,14 @@ export default function DeviceControlPage() {
                   <input type="checkbox" checked={logOnlyError} onChange={(e) => setLogOnlyError(e.target.checked)} />
                   仅错误
                 </label>
+
+                <Button size="sm" variant="outline" onClick={copyVisibleLogs}>
+                  复制
+                </Button>
+                <Button size="sm" variant="outline" onClick={exportVisibleLogs}>
+                  导出
+                </Button>
+
                 <Button size="sm" variant="outline" onClick={() => setLogs([])}>
                   清空
                 </Button>

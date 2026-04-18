@@ -1,0 +1,21 @@
+# 说明：
+# - 这个 requirements.txt 用于把 codeApp 脚本项目依赖安装到内置 Python 的 Lib/site-packages。
+# - 安装目标目录（Windows Embedded Python）：resources/python/Lib/site-packages
+#
+# 强依赖：后续所有脚本默认可用
+uiautomator2==3.3.4
+adbutils==2.9.3
+requests==2.32.3
+retry==0.9.2
+lxml==5.2.2
+pillow==10.4.0
+
+# 你的脚本如果还依赖其它库，继续追加即可。
+
+
+
+
+# cd d:\code\github\hca
+# .\resources\python\python.exe -m pip --version
+# .\resources\python\python.exe -m pip install --upgrade pip
+# .\resources\python\python.exe -m pip install -r .\scripts\codeApp\requirements.txt --target .\resources\python\Lib\site-packages --no-warn-script-location

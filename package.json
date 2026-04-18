@@ -15,7 +15,12 @@
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux"
+    "build:linux": "npm run build && electron-builder --linux",
+    "py:pip:version": ".\\resources\\python\\python.exe -m pip --version",
+    "py:pip:upgrade": ".\\resources\\python\\python.exe -m pip install --upgrade pip",
+    "py:codeapp:deps": ".\\resources\\python\\python.exe -m pip install -r .\\scripts\\codeApp\\requirements.txt --target .\\resources\\python\\Lib\\site-packages-codeapp --no-warn-script-location",
+    "py:codeapp:deps:clean": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path '.\\resources\\python\\Lib\\site-packages-codeapp') { Remove-Item -Recurse -Force '.\\resources\\python\\Lib\\site-packages-codeapp\\*' }\"",
+    "py:bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\py_bootstrap.ps1"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
