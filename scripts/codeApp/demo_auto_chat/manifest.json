@@ -1,0 +1,23 @@
+{
+  "name": "自动聊天(示例)",
+  "key": "demo_auto_chat",
+  "entry": "main.py",
+  "version": "0.1.0",
+  "description": "示例脚本：打印参数并输出结构化日志",
+  "author": "hca",
+  "category": "示例",
+  "params": [
+    {
+      "key": "message",
+      "label": "发送内容",
+      "type": "text",
+      "default": "你好"
+    },
+    {
+      "key": "delay",
+      "label": "间隔时间(秒)",
+      "type": "number",
+      "default": 2
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "name": "Soul自动私聊(示例)",
+  "key": "soul",
+  "entry": "main.py",
+  "version": "0.1.0",
+  "description": "示例脚本：打开 Soul，优先处理未读/否则灵魂匹配，抓取聊天并用本地模型生成回复后发送。",
+  "author": "hca",
+  "category": "示例",
+  "params": [
+    {
+      "key": "loop",
+      "label": "执行轮数",
+      "type": "number",
+      "default": 3
+    },
+    {
+      "key": "interval",
+      "label": "轮次间隔(秒)",
+      "type": "number",
+      "default": 5
+    },
+    {
+      "key": "model_url",
+      "label": "模型接口URL",
+      "type": "text",
+      "default": "http://192.168.190.99:1234/v1/chat/completions"
+    },
+    {
+      "key": "model_name",
+      "label": "模型名称",
+      "type": "text",
+      "default": "Gemma 3 4B"
+    }
+  ]
+}
