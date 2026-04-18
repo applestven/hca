@@ -5,6 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import ScriptRunnerPanel from '@/components/ScriptRunnerPanel'
 
 const DEVICE_GROUP_UNGROUPED = '未分组'
@@ -83,6 +90,7 @@ export default function DeviceControlPage() {
   // 日志过滤/搜索
   const [logKeyword, setLogKeyword] = useState('')
   const [logOnlyError, setLogOnlyError] = useState(false)
+  const [logOpen, setLogOpen] = useState(false)
 
   // 自动重连
   const [autoReconnect, setAutoReconnect] = useState(true)
@@ -387,9 +395,9 @@ export default function DeviceControlPage() {
         if (!logKeyword.trim()) return true
         const k = logKeyword.trim().toLowerCase()
         return (
-          String(l.device).toLowerCase().includes(k) ||
-          String(l.action).toLowerCase().includes(k) ||
-          String(l.result).toLowerCase().includes(k)
+          String(l.device || '').toLowerCase().includes(k) ||
+          String(l.action || '').toLowerCase().includes(k) ||
+          String(l.result || '').toLowerCase().includes(k)
         )
       })
   }, [logs, logOnlyError, logKeyword])
@@ -424,8 +432,8 @@ export default function DeviceControlPage() {
   }, [])
 
   return (
-    <div className="w-full h-[calc(100vh-3rem)] p-3">
-      <div className="grid grid-cols-12 gap-3 h-full">
+    <div className="h-full w-full p-4">
+      <div className="grid grid-cols-12 gap-4 h-full">
         {/* 左侧：设备列表 */}
         <Card className="col-span-3 h-full flex flex-col">
           <CardHeader className="pb-2">
@@ -806,24 +814,36 @@ export default function DeviceControlPage() {
                 : '未选择设备（选中 1 台设备会自动联动）'}
               <div className="hidden" />
             </div>
-            <div className="mt-3 text-xs text-muted-foreground">
+            {/* <div className="mt-3 text-xs text-muted-foreground">
               脚本目录：<code>bin\scrcpy</code>（下一步接入 scrcpy/adb 能力）
-            </div>
+            </div> */}
           </CardContent>
         </Card>
 
         {/* 右侧：控制面板 */}
         <Card className="col-span-3 h-full flex flex-col">
-          <CardHeader className="pb-2">
+          <CardHeader className="pb-2 space-y-2">
             <CardTitle className="text-base">控制面板</CardTitle>
-            <div className="mt-2 flex gap-2">
-              <Button size="sm" variant={tab === 'control' ? 'default' : 'outline'} onClick={() => setTab('control')}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant={tab === 'control' ? 'default' : 'outline'}
+                onClick={() => setTab('control')}
+              >
                 控制
               </Button>
-              <Button size="sm" variant={tab === 'batch' ? 'default' : 'outline'} onClick={() => setTab('batch')}>
+              <Button
+                size="sm"
+                variant={tab === 'batch' ? 'default' : 'outline'}
+                onClick={() => setTab('batch')}
+              >
                 群控
               </Button>
-              <Button size="sm" variant={tab === 'script' ? 'default' : 'outline'} onClick={() => setTab('script')}>
+              <Button
+                size="sm"
+                variant={tab === 'script' ? 'default' : 'outline'}
+                onClick={() => setTab('script')}
+              >
                 脚本
               </Button>
               <Button
@@ -833,10 +853,12 @@ export default function DeviceControlPage() {
               >
                 主从
               </Button>
-            </div>
-            <div className="mt-2 text-xs text-muted-foreground">
-              当前选中：{selectedIds.size} 台；当前控制：
-              {activeDeviceId ? devices.find((d) => d.id === activeDeviceId)?.name ?? activeDeviceId : '无'}
+
+              <div className="flex-1" />
+
+              <Button size="sm" variant="outline" onClick={() => setLogOpen(true)}>
+                日志
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="flex-1 overflow-auto">
@@ -1168,58 +1190,57 @@ export default function DeviceControlPage() {
           </CardContent>
         </Card>
 
-        {/* 底部：日志区 */}
-        <Card className="col-span-12 h-[28%] flex flex-col">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">日志</CardTitle>
-              <div className="flex items-center gap-2">
-                <Input
-                  className="h-8 w-56"
-                  placeholder="搜索：设备/操作/结果"
-                  value={logKeyword}
-                  onChange={(e) => setLogKeyword(e.target.value)}
-                />
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={logOnlyError} onChange={(e) => setLogOnlyError(e.target.checked)} />
-                  仅错误
-                </label>
+        <Dialog open={logOpen} onOpenChange={setLogOpen}>
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>日志</DialogTitle>
+              <DialogDescription>展示设备中控的操作日志，可搜索、筛选、复制与导出。</DialogDescription>
+            </DialogHeader>
 
-                <Button size="sm" variant="outline" onClick={copyVisibleLogs}>
-                  复制
-                </Button>
-                <Button size="sm" variant="outline" onClick={exportVisibleLogs}>
-                  导出
-                </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-8 w-64"
+                placeholder="搜索：设备/操作/结果"
+                value={logKeyword}
+                onChange={(e) => setLogKeyword(e.target.value)}
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={logOnlyError} onChange={(e) => setLogOnlyError(e.target.checked)} />
+                仅错误
+              </label>
 
-                <Button size="sm" variant="outline" onClick={() => setLogs([])}>
-                  清空
-                </Button>
+              <Button size="sm" variant="outline" onClick={copyVisibleLogs}>
+                复制
+              </Button>
+              <Button size="sm" variant="outline" onClick={exportVisibleLogs}>
+                导出
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setLogs([])}>
+                清空
+              </Button>
+            </div>
+
+            <div className="max-h-[60vh] overflow-auto rounded border p-2">
+              <div className="grid grid-cols-12 gap-2 text-xs font-medium pb-2 border-b">
+                <div className="col-span-2">时间</div>
+                <div className="col-span-3">设备</div>
+                <div className="col-span-5">操作</div>
+                <div className="col-span-2">结果</div>
+              </div>
+              <div className="divide-y">
+                {visibleLogs.map((l, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 text-xs py-2">
+                    <div className="col-span-2 text-muted-foreground">{l.time}</div>
+                    <div className="col-span-3">{l.device}</div>
+                    <div className="col-span-5 text-muted-foreground">{l.action}</div>
+                    <div className="col-span-2 break-words">{l.result}</div>
+                  </div>
+                ))}
+                {visibleLogs.length === 0 && <div className="text-sm text-muted-foreground py-4">暂无日志</div>}
               </div>
             </div>
-          </CardHeader>
-          <CardContent className="flex-1 overflow-auto">
-            <div className="grid grid-cols-12 gap-2 text-xs font-medium pb-2 border-b">
-              <div className="col-span-2">时间</div>
-              <div className="col-span-3">设备</div>
-              <div className="col-span-5">操作</div>
-              <div className="col-span-2">结果</div>
-            </div>
-            <div className="divide-y">
-              {visibleLogs.map((l, idx) => (
-                <div key={idx} className="grid grid-cols-12 gap-2 text-xs py-2">
-                  <div className="col-span-2 text-muted-foreground">{l.time}</div>
-                  <div className="col-span-3">{l.device}</div>
-                  <div className="col-span-5 text-muted-foreground">{l.action}</div>
-                  <div className="col-span-2">{l.result}</div>
-                </div>
-              ))}
-              {visibleLogs.length === 0 && (
-                <div className="text-sm text-muted-foreground py-4">暂无日志</div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   )

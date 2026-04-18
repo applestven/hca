@@ -138,14 +138,22 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
         <div className="space-y-1">
           <Label>脚本选择</Label>
           <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-slate-900 dark:text-slate-800 shadow-sm"
+            style={{ color: selectedKey ? undefined : 'hsl(var(--muted-foreground))' }}
             value={selectedKey}
             onChange={(e) => setSelectedKey(e.target.value)}
           >
-            <option value="">请选择脚本</option>
+            <option value="" className="text-slate-800 dark:text-slate-800">
+              请选择脚本
+            </option>
             {scripts.map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.category ? `[${s.category}] ` : ''}{s.name} ({s.key})
+              <option
+                key={s.key}
+                value={s.key}
+                className="text-slate-900 dark:text-slate-800 bg-white dark:bg-slate-100"
+              >
+                {s.category ? `[${s.category}] ` : ''}
+                {s.name} ({s.key})
               </option>
             ))}
           </select>
