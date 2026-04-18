@@ -10,6 +10,15 @@ files:
   - "!{.env,.env.*,.npmrc,pnpm-lock.yaml}"
 asarUnpack:
   - resources/**
+
+extraResources:
+  - from: scripts/
+    to: scripts
+  - from: resources/python/
+    to: python
+
+# 说明：resources/python 需包含 python.exe、python3*.dll、python._pth、Lib、Lib/site-packages
+
 win:
   executableName: electron-temp
 nsis:

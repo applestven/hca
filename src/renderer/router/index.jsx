@@ -6,6 +6,7 @@ const Login = lazy(() => import('@/views/login'))
 const Home = lazy(() => import('@/views/home'))
 const Version = lazy(() => import('@/views/version'))
 const DeviceControl = lazy(() => import('@/views/device-control'))
+const Onboarding = lazy(() => import('@/views/onboarding'))
 
 const router = createHashRouter([
     {
@@ -19,6 +20,10 @@ const router = createHashRouter([
             {
                 path: 'device-control',
                 element: <DeviceControl />
+            },
+            {
+                path: 'onboarding',
+                element: <Onboarding />
             },
             {
                 path: 'login',

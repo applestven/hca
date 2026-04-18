@@ -1,5 +1,7 @@
 import { contextBridge } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import onboarding from './onboarding'
+import scripts from './scripts'
 
 const updater = {
   mode: () => electronAPI.ipcRenderer.invoke('update:mode'),
@@ -52,6 +54,8 @@ const api = {
         pingFirst: options?.pingFirst
       })
   },
+  scripts,
+  onboarding,
   updater
 }
 

@@ -22,6 +22,16 @@ import {
   adbReconnectSmart
 } from './utils/adb'
 
+import {
+  enableWifiTcpip,
+  pairAndConnect,
+  atxCheck,
+  atxInstall,
+  permissionCheck
+} from './utils/onboarding'
+
+import { listScripts, startScript, stopScript, stopScriptGroup, checkPythonRuntime } from './utils/scriptRunner'
+
 // 更新模式：ui（手动） | force（强制）
 // 优先走更新服务器策略（policy.json），拉取失败再回退到环境变量
 let UPDATE_MODE = process.env.UPDATE_MODE || 'ui'
@@ -305,6 +315,62 @@ app.whenReady().then(async () => {
   ipcMain.handle('device:reconnect', async (_e, { serial } = {}) => {
     if (!serial) throw new Error('serial is required')
     return await adbReconnectSmart(serial)
+  })
+
+  // Setup Wizard / Onboarding
+  ipcMain.handle('onboarding:enable-wifi-tcpip', async (_e, { serial, port } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await enableWifiTcpip(serial, port ?? 5555)
+  })
+
+  ipcMain.handle('onboarding:pair-and-connect', async (_e, { ip, port, code } = {}) => {
+    if (!ip || !port || !code) throw new Error('ip/port/code is required')
+    return await pairAndConnect(ip, port, code)
+  })
+
+  ipcMain.handle('onboarding:atx-check', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await atxCheck(serial)
+  })
+
+  ipcMain.handle('onboarding:atx-install', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await atxInstall(serial)
+  })
+
+  ipcMain.handle('onboarding:permission-check', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await permissionCheck(serial)
+  })
+
+  // 脚本系统
+  ipcMain.handle('scripts:list', async () => {
+    return listScripts()
+  })
+
+  // 为什么要新增：你要求脚本必须依赖 uiautomator2，因此提供一个主进程自检能力
+  // 让 UI 能明确提示“内置 Python/依赖缺失”而不是执行时才崩。
+  ipcMain.handle('scripts:check-runtime', async () => {
+    return await checkPythonRuntime()
+  })
+
+  ipcMain.handle('scripts:start', async (_e, { key, params, deviceSerials } = {}) => {
+    // 使用主窗口（第一个窗口）确保事件一定发到 UI
+    const mainWindow = BrowserWindow.getAllWindows()?.[0]
+    const send = (payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('scripts:event', payload)
+      }
+    }
+
+    const r = startScript({ key, params, deviceSerials }, (evt) => send(evt))
+    return r
+  })
+
+  ipcMain.handle('scripts:stop', async (_e, { runId, group } = {}) => {
+    if (!runId) throw new Error('runId is required')
+    if (group) return stopScriptGroup(runId)
+    return stopScript(runId)
   })
 
   await initUpdateModeFromPolicy()

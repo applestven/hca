@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import ScriptRunnerPanel from '@/components/ScriptRunnerPanel'
 
 const DEVICE_GROUP_UNGROUPED = '未分组'
 
@@ -1105,14 +1106,11 @@ export default function DeviceControlPage() {
             )}
 
             {tab === 'script' && (
-              <div className="space-y-2">
-                <div className="text-sm font-medium">脚本列表（占位）</div>
-                <div className="grid gap-2">
-                  <Button variant="outline" onClick={() => doActionMock('脚本：自动聊天(占位)')}>自动聊天</Button>
-                  <Button variant="outline" onClick={() => doActionMock('脚本：自动点赞(占位)')}>自动点赞</Button>
-                  <Button variant="outline" onClick={() => doActionMock('脚本：自动回复(占位)')}>自动回复</Button>
-                </div>
-                <Button className="w-full" onClick={() => doActionMock('开始执行脚本(占位)')}>开始执行</Button>
+              <div className="space-y-3">
+                <ScriptRunnerPanel
+                  deviceSerials={selectedDevices.map((d) => d.sn)}
+                  pushLog={pushLog}
+                />
               </div>
             )}
 
