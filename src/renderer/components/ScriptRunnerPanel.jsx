@@ -64,6 +64,10 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
 
   const start = async () => {
     if (!selectedKey) return
+    if (!deviceSerials?.length) {
+      pushLog?.('系统', '启动脚本', '请先选择至少 1 台设备')
+      return
+    }
     setBusy(true)
     try {
       const r = await window.api?.scripts?.start?.({ key: selectedKey, params, deviceSerials })
@@ -197,9 +201,13 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
           执行范围：{deviceSerials?.length ? `已选 ${deviceSerials.length} 台设备` : '未选择设备（将以单实例运行）'}
         </div>
 
-        <Button className="w-full" disabled={busy || !selectedKey} onClick={start}>
+        <Button className="w-full" disabled={busy || !selectedKey || !deviceSerials?.length} onClick={start}>
           {busy ? '执行中…' : '开始执行'}
         </Button>
+
+        {!deviceSerials?.length && (
+          <div className="text-xs text-rose-600">请先在左侧设备列表勾选至少 1 台设备</div>
+        )}
 
         {lastRun?.runId && <div className="text-xs text-muted-foreground">runId: {lastRun.runId}</div>}
       </CardContent>

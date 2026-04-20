@@ -229,6 +229,16 @@ export default function DeviceControlPage() {
     return devices.filter((d) => set.has(d.id))
   }, [devices, selectedIds])
 
+  // 单个设备勾选/取消（修复：之前缺失导致只能全选/无法单选）
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const setAll = (checked) => {
     if (!checked) {
       setSelectedIds(new Set())
@@ -433,9 +443,14 @@ export default function DeviceControlPage() {
 
   return (
     <div className="h-full w-full p-4">
-      <div className="grid grid-cols-12 gap-4 h-full">
+      {/* 响应式布局：
+          - <sm：单列（避免过窄挤压）
+          - sm~lg：两列（设备列表 + 控制面板），隐藏预览
+          - >=lg：三列（设备列表 + 预览 + 控制面板）
+      */}
+      <div className="grid h-full gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 auto-rows-fr">
         {/* 左侧：设备列表 */}
-        <Card className="col-span-3 h-full flex flex-col">
+        <Card className="h-full flex flex-col min-w-0 sm:col-span-1 lg:col-span-3">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">设备列表</CardTitle>
 
@@ -792,8 +807,8 @@ export default function DeviceControlPage() {
           </CardContent>
         </Card>
 
-        {/* 中间：预览区 */}
-        <Card className="col-span-6 h-full flex flex-col">
+        {/* 中间：预览区（小窗口隐藏，避免挤压导致错乱） */}
+        <Card className="hidden lg:flex lg:col-span-6 h-full flex-col min-w-0">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">屏幕预览</CardTitle>
@@ -821,7 +836,7 @@ export default function DeviceControlPage() {
         </Card>
 
         {/* 右侧：控制面板 */}
-        <Card className="col-span-3 h-full flex flex-col">
+        <Card className="h-full flex flex-col min-w-0 sm:col-span-1 lg:col-span-3">
           <CardHeader className="pb-2 space-y-2">
             <CardTitle className="text-base">控制面板</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
@@ -1175,6 +1190,11 @@ export default function DeviceControlPage() {
                   deviceSerials={selectedDevices.map((d) => d.sn)}
                   pushLog={pushLog}
                 />
+                {selectedDevices.length === 0 && (
+                  <div className="text-xs text-rose-600">
+                    请先在左侧勾选至少 1 台在线设备后再执行脚本。
+                  </div>
+                )}
               </div>
             )}
 
