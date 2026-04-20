@@ -4,6 +4,9 @@ body {
   margin: 0;
   min-height: 100vh;
   overflow: hidden;
+  /* 使用主题变量作为底色，确保切换背景色立即生效 */
+  background: var(--color-background);
+  /* 保留纹理但不覆盖底色 */
   background-image: url('./wavy-lines.svg');
   background-size: cover;
   background-position: center;

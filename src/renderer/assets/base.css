@@ -1,6 +1,103 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* 内置背景主题（由 documentElement.dataset.themeBg 控制） */
+:root {
+  --hca-bg-default: var(--ev-c-black);
+  --hca-bg-slate: #0b1220;
+  --hca-bg-grape: #1a1026;
+  --hca-bg-sea: #071a24;
+  --hca-bg-sunset: #241105;
+  --hca-bg-graphite: #1f1f1f;
+
+  /* 渐变用色（默认值） */
+  --hca-gradient-from: #3b82f6; /* blue-500 */
+  --hca-gradient-to: #a855f7; /* purple-500 */
+
+  /* shadcn/tailwind token（让 bg-background / bg-card 会跟随变化） */
+  --background: var(--hca-bg-default);
+  --card: color-mix(in oklab, var(--hca-bg-default) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-default) 82%, white 18%);
+  --input: var(--border);
+}
+
+:root[data-theme-bg='default'] {
+  --color-background: var(--hca-bg-default);
+  --hca-gradient-from: #3b82f6;
+  --hca-gradient-to: #a855f7;
+
+  --background: var(--hca-bg-default);
+  --card: color-mix(in oklab, var(--hca-bg-default) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-default) 82%, white 18%);
+  --input: var(--border);
+}
+:root[data-theme-bg='slate'] {
+  --color-background: var(--hca-bg-slate);
+  --hca-gradient-from: #0f172a; /* slate-900 */
+  --hca-gradient-to: #334155; /* slate-700 */
+
+  --background: var(--hca-bg-slate);
+  --card: color-mix(in oklab, var(--hca-bg-slate) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-slate) 82%, white 18%);
+  --input: var(--border);
+}
+:root[data-theme-bg='grape'] {
+  --color-background: var(--hca-bg-grape);
+  --hca-gradient-from: #4c1d95; /* violet-900 */
+  --hca-gradient-to: #a21caf; /* fuchsia-700 */
+
+  --background: var(--hca-bg-grape);
+  --card: color-mix(in oklab, var(--hca-bg-grape) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-grape) 82%, white 18%);
+  --input: var(--border);
+}
+:root[data-theme-bg='sea'] {
+  --color-background: var(--hca-bg-sea);
+  --hca-gradient-from: #0c4a6e; /* sky-900 */
+  --hca-gradient-to: #155e75; /* cyan-800 */
+
+  --background: var(--hca-bg-sea);
+  --card: color-mix(in oklab, var(--hca-bg-sea) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-sea) 82%, white 18%);
+  --input: var(--border);
+}
+:root[data-theme-bg='sunset'] {
+  --color-background: var(--hca-bg-sunset);
+  --hca-gradient-from: #9a3412; /* orange-800 */
+  --hca-gradient-to: #be123c; /* rose-700 */
+
+  --background: var(--hca-bg-sunset);
+  --card: color-mix(in oklab, var(--hca-bg-sunset) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-sunset) 82%, white 18%);
+  --input: var(--border);
+}
+:root[data-theme-bg='graphite'] {
+  --color-background: var(--hca-bg-graphite);
+
+  /* 更克制的深灰渐变 */
+  --hca-gradient-from: #111111;
+  --hca-gradient-to: #2a2a2a;
+
+  --background: var(--hca-bg-graphite);
+  --card: color-mix(in oklab, var(--hca-bg-graphite) 92%, white 8%);
+  --popover: var(--card);
+  --border: color-mix(in oklab, var(--hca-bg-graphite) 82%, white 18%);
+  --input: var(--border);
+}
+
+/* 关闭渐变：from/to 统一为背景色 */
+:root[data-theme-gradient='off'] {
+  --hca-gradient-from: var(--color-background);
+  --hca-gradient-to: var(--color-background);
+}
+
 :root {
   --ev-c-white: #ffffff;
   --ev-c-white-soft: #f8f8f8;

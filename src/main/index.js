@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import Store from 'electron-store'
 import { join } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -40,6 +41,52 @@ let UPDATE_POLICY = null
 // 提前注册 IPC，避免渲染进程过早调用导致 "No handler registered"
 ipcMain.handle('update:mode', () => UPDATE_MODE)
 ipcMain.handle('update:policy', () => UPDATE_POLICY)
+
+// 主题配置（electron-store 持久化）
+const themeStore = new Store({
+  name: 'hca-settings',
+  defaults: {
+    theme: {
+      mode: 'system', // system | light | dark
+      background: 'default', // default | slate | grape | sea | sunset
+      gradient: true // 是否启用渐变背景
+    }
+  }
+})
+
+const BUILTIN_THEMES = [
+  { key: 'default', name: '默认' },
+  { key: 'slate', name: '深灰' },
+  { key: 'grape', name: '葡萄紫' },
+  { key: 'sea', name: '海蓝' },
+  { key: 'sunset', name: '落日橙' },
+  { key: 'graphite', name: '石墨灰(#1F1F1F)' }
+]
+
+// 主题 IPC（尽量提前注册，避免渲染进程过早 invoke 导致 No handler registered）
+ipcMain.handle('theme:get', async () => {
+  const theme = themeStore.get('theme')
+  return { theme, builtins: BUILTIN_THEMES }
+})
+
+ipcMain.handle('theme:set', async (_e, next = {}) => {
+  const prev = themeStore.get('theme') || {}
+  const merged = {
+    ...prev,
+    ...next,
+    mode: next?.mode ?? prev?.mode ?? 'system',
+    background: next?.background ?? prev?.background ?? 'default',
+    gradient: typeof next?.gradient === 'boolean' ? next.gradient : (typeof prev?.gradient === 'boolean' ? prev.gradient : true)
+  }
+
+  // 白名单校验，避免写入无效值
+  if (!['system', 'light', 'dark'].includes(merged.mode)) merged.mode = 'system'
+  if (!BUILTIN_THEMES.some((t) => t.key === merged.background)) merged.background = 'default'
+  merged.gradient = Boolean(merged.gradient)
+
+  themeStore.set('theme', merged)
+  return { theme: merged }
+})
 
 function createWindow() {
   // Create the browser window.

@@ -33,6 +33,10 @@ const api = {
   app: {
     getVersion: () => electronAPI.ipcRenderer.invoke('app:get-version')
   },
+  theme: {
+    get: () => electronAPI.ipcRenderer.invoke('theme:get'),
+    set: (next) => electronAPI.ipcRenderer.invoke('theme:set', next)
+  },
   device: {
     list: () => electronAPI.ipcRenderer.invoke('device:list'),
     connectWifi: (ip, port) => electronAPI.ipcRenderer.invoke('device:connect-wifi', { ip, port }),
