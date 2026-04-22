@@ -319,6 +319,36 @@ async function mapLimit(items, limit, mapper) {
   return results
 }
 
+// 扫描一组 IP（可选 ping），并按需执行 perIpHandler（比如尝试 adb connect）
+async function scanIpList(
+  ips,
+  { port = 5555, concurrency = 50, pingFirst = true } = {},
+  perIpHandler
+) {
+  const list = Array.from(new Set((ips || []).map((x) => String(x).trim()).filter(Boolean)))
+
+  const ordered = await mapLimit(list, concurrency, async (ip) => {
+    const target = `${ip}:${port}`
+
+    if (pingFirst) {
+      const ok = await pingOnce(ip, 300)
+      if (!ok) {
+        return { ip, port, target, ok: false, skipped: true, message: 'ping failed' }
+      }
+    }
+
+    if (typeof perIpHandler === 'function') {
+      const r = await perIpHandler(ip)
+      return { ip, port, target, ...(r || {}) }
+    }
+
+    return { ip, port, target, ok: true }
+  })
+
+  // mapLimit 保序返回；这里直接输出数组即可
+  return ordered
+}
+
 export async function adbConnectMany(ips, { port = 5555, concurrency = 20, pingFirst = true } = {}) {
   const list = Array.from(new Set((ips || []).map((x) => String(x).trim()).filter(Boolean)))
   const results = []

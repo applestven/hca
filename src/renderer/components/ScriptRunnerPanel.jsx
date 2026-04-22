@@ -4,6 +4,34 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
+function showFriendlyError(message) {
+  const raw = String(message || '')
+
+  // 常见错误做中文兜底映射，避免英文/技术细节直接暴露给用户
+  let msg = raw
+  if (!msg) msg = '操作失败，请稍后再试。'
+
+  if (/no script permission|permission|expire|expired|remaining|count/i.test(msg)) {
+    msg = '您没有权限使用该脚本，或权限已过期/次数不足。请前往“版本”页面激活后再试。'
+  }
+  if (/key is required/i.test(msg)) {
+    msg = '请选择要运行的脚本。'
+  }
+  if (/script not found/i.test(msg)) {
+    msg = '脚本不存在或已损坏，请刷新脚本列表后再试。'
+  }
+  if (/python/i.test(msg) && (/not found|9009|enoent|createprocess/i.test(msg))) {
+    msg = '脚本运行环境异常：未找到可用的 Python。请先在“环境自检”中修复后再试。'
+  }
+
+  // 兜底用原生弹窗，保证“必须弹窗提示”
+  try {
+    window.alert(msg)
+  } catch {
+    // ignore
+  }
+}
+
 function ParamField({ p, value, onChange }) {
   const type = p?.type || 'text'
   return (
@@ -66,6 +94,7 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
     if (!selectedKey) return
     if (!deviceSerials?.length) {
       pushLog?.('系统', '启动脚本', '请先选择至少 1 台设备')
+      showFriendlyError('请先选择至少 1 台设备')
       return
     }
     setBusy(true)
@@ -74,7 +103,10 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
       setLastRun(r)
       pushLog?.('系统', '启动脚本', `ok(${selectedKey}) targets=${deviceSerials?.length || 0}`)
     } catch (e) {
-      pushLog?.('系统', '启动脚本', e?.message || String(e))
+      const msg = e?.message || String(e)
+      pushLog?.('系统', '启动脚本', msg)
+      // 权限类错误/以及其它显式错误：弹窗提示
+      showFriendlyError(msg)
     } finally {
       setBusy(false)
     }

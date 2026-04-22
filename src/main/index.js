@@ -32,6 +32,7 @@ import {
 } from './utils/onboarding'
 
 import { listScripts, startScript, stopScript, stopScriptGroup, checkPythonRuntime } from './utils/scriptRunner'
+import { getOrCreateMachineId, createApiClient, featureIsValid } from './utils/permission'
 
 // 更新模式：ui（手动） | force（强制）
 // 优先走更新服务器策略（policy.json），拉取失败再回退到环境变量
@@ -258,7 +259,7 @@ app.whenReady().then(async () => {
   // Set app user model id for windows
   // electronApp.setAppUserModelId('com.electron')
 
-  // Default open or close DevTools by F12 in development
+  // Default open or
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
@@ -401,7 +402,67 @@ app.whenReady().then(async () => {
     return await checkPythonRuntime()
   })
 
+  // ===== 机器码/权限系统（仅对脚本功能做权限管控） =====
+  const permissionStore = new Store({
+    name: 'hca-permission',
+    defaults: {
+      machineId: '',
+      permission: null
+    }
+  })
+
+  const PERMISSION_API_BASE = process.env.HCA_PERMISSION_API_BASE || 'http://139.199.192.179:7001'
+  const permissionApi = createApiClient({ baseUrl: PERMISSION_API_BASE })
+
+  async function refreshPermission() {
+    const machineId = permissionStore.get('machineId') || getOrCreateMachineId()
+    permissionStore.set('machineId', machineId)
+    const r = await permissionApi.getFeatures(machineId)
+    permissionStore.set('permission', r)
+    return r
+  }
+
+  ipcMain.handle('permission:get-machine-id', async () => {
+    const machineId = permissionStore.get('machineId') || getOrCreateMachineId()
+    permissionStore.set('machineId', machineId)
+    return { machineId }
+  })
+
+  ipcMain.handle('permission:refresh', async () => {
+    return await refreshPermission()
+  })
+
+  ipcMain.handle('permission:activate', async (_e, { code } = {}) => {
+    const machineId = permissionStore.get('machineId') || getOrCreateMachineId()
+    permissionStore.set('machineId', machineId)
+    if (!code) throw new Error('code is required')
+
+    // 激活
+    await permissionApi.activateCode(machineId, code)
+    // 激活后刷新权限
+    return await refreshPermission()
+  })
+
   ipcMain.handle('scripts:start', async (_e, { key, params, deviceSerials } = {}) => {
+    // 在开始执行脚本前校验权限：按“脚本 key”校验（例如 soul 的 manifest.json key= soul）
+    if (!key) throw new Error('key is required')
+
+    const machineId = permissionStore.get('machineId') || getOrCreateMachineId()
+    permissionStore.set('machineId', machineId)
+
+    const permission = permissionStore.get('permission') || (await refreshPermission())
+    const f = permission?.data?.features?.[key]
+    if (!featureIsValid(f)) {
+      throw new Error('您没有权限使用该脚本，或权限已过期/次数不足。请前往“版本”页面激活后再试。')
+    }
+
+    // 次数型：在启动前做一次扣减（服务端原子扣减）
+    if (f?.type === 'count') {
+      await permissionApi.updateFeatureCount(machineId, key)
+      // 扣减后刷新缓存，保证 UI 展示一致
+      await refreshPermission().catch(() => {})
+    }
+
     // 使用主窗口（第一个窗口）确保事件一定发到 UI
     const mainWindow = BrowserWindow.getAllWindows()?.[0]
     const send = (payload) => {

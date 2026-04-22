@@ -1,5 +1,5 @@
 {
-  "name": "Soul自动私聊(示例)",
+  "name": "Soul自动私聊",
   "key": "soul",
   "entry": "main.py",
   "version": "0.1.0",

@@ -60,7 +60,12 @@ const api = {
   },
   scripts,
   onboarding,
-  updater
+  updater,
+  permission: {
+    getMachineId: () => electronAPI.ipcRenderer.invoke('permission:get-machine-id'),
+    refresh: () => electronAPI.ipcRenderer.invoke('permission:refresh'),
+    activate: (code) => electronAPI.ipcRenderer.invoke('permission:activate', { code })
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
