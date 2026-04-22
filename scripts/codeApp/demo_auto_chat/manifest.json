@@ -1,6 +1,6 @@
 {
-  "name": "自动聊天(示例)",
-  "key": "demo_auto_chat",
+  "name": "打开微信(示例)",
+  "key": "temp",
   "entry": "main.py",
   "version": "0.1.0",
   "description": "示例脚本：打印参数并输出结构化日志",
