@@ -37,7 +37,8 @@ export function getOrCreateMachineId() {
 
   let id = ''
   try {
-    id = machineIdSync({ original: true })
+    // 固定模板名，避免不同项目/环境生成规则不一致
+    id = machineIdSync({ original: true, templateName: 'hca' })
   } catch {
     id = fallbackUuid()
   }
@@ -59,6 +60,24 @@ export function getOrCreateMachineId() {
 export function createApiClient({ baseUrl }) {
   const base = String(baseUrl || '').replace(/\/$/, '')
 
+  function escapeShellArg(v) {
+    // curl 在 shell 下最稳妥：统一用双引号包裹，并转义双引号与反斜杠
+    return `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  }
+
+  function toCurl({ method, url, headers, body }) {
+    const parts = ['curl', '-i', '-sS', '-X', method]
+    for (const [k, v] of Object.entries(headers || {})) {
+      if (v === undefined || v === null) continue
+      parts.push('-H', escapeShellArg(`${k}: ${v}`))
+    }
+    if (body !== undefined && body !== null && body !== '') {
+      parts.push('--data-raw', escapeShellArg(body))
+    }
+    parts.push(escapeShellArg(url))
+    return parts.join(' ')
+  }
+
   async function request(path, { method = 'GET', query, body, headers } = {}) {
     const { net } = await import('electron')
 
@@ -75,27 +94,73 @@ export function createApiClient({ baseUrl }) {
 
     const payload = body === undefined ? undefined : JSON.stringify(body)
 
+    const finalHeaders = {
+      'content-type': 'application/json',
+      ...(headers || {})
+    }
+
+    // 开发环境：打印可复制的 curl（用于外部复现请求）
+    if (process.env.NODE_ENV === 'development') {
+      const curl = toCurl({ method, url, headers: finalHeaders, body: payload })
+      console.log(`[permission-api] ${method} ${url}`)
+      console.log(`[permission-api] curl: ${curl}`)
+    }
+
     return await new Promise((resolve, reject) => {
       const req = net.request({
         method,
         url,
-        headers: {
-          'content-type': 'application/json',
-          ...(headers || {})
-        }
+        headers: finalHeaders
       })
 
       let chunks = ''
       req.on('response', (res) => {
+        const status = res.statusCode || 0
+        const ctRaw = Array.isArray(res.headers?.['content-type'])
+          ? res.headers['content-type'].join(';')
+          : res.headers?.['content-type']
+        const contentType = String(ctRaw || '')
+
         res.on('data', (d) => (chunks += d.toString()))
         res.on('end', () => {
+          const bodyText = String(chunks || '')
+          const snippet = bodyText.slice(0, 200)
+
+          // 1) 空响应
+          if (!bodyText) return reject(new Error(`empty response (status=${status})`))
+
+          // 2) 非 2xx：很多情况下会返回 HTML 错误页（例如 404/500/反代异常）
+          if (status < 200 || status >= 300) {
+            return reject(
+              new Error(
+                `HTTP ${status} ${method} ${url} (content-type=${contentType || 'unknown'}) body: ${JSON.stringify(snippet)}`
+              )
+            )
+          }
+
+          // 3) content-type 不是 json 或 body 以 < 开头：大概率是 HTML（例如 nginx/express 默认错误页）
+          const looksLikeHtml = /^\s*</.test(bodyText)
+          const looksLikeJsonCT = /application\/json/i.test(contentType)
+          if (!looksLikeJsonCT || looksLikeHtml) {
+            return reject(
+              new Error(
+                `Non-JSON response ${method} ${url} (content-type=${contentType || 'unknown'}) body: ${JSON.stringify(snippet)}`
+              )
+            )
+          }
+
+          // 4) JSON 解析
           try {
-            const json = chunks ? JSON.parse(chunks) : null
-            if (!json) return reject(new Error('empty response'))
+            const json = JSON.parse(bodyText)
+            if (!json) return reject(new Error('empty json'))
             if (json.code !== 1) return reject(new Error(json.msg || 'request failed'))
             resolve(json)
           } catch (e) {
-            reject(e)
+            reject(
+              new Error(
+                `JSON parse error ${method} ${url}: ${(e && e.message) || String(e)} body: ${JSON.stringify(snippet)}`
+              )
+            )
           }
         })
       })
@@ -106,9 +171,10 @@ export function createApiClient({ baseUrl }) {
   }
 
   return {
-    getFeatures: (machineId) => request('/activation_codes/features', { method: 'GET', query: { machineId } }),
-    activateCode: (user_id, code) =>
-      request('/user_activation_codes/activation', { method: 'POST', body: { user_id, code } }),
+    // 注册/初始化（后端会在此接口内自动创建用户记录）
+    getFeatures: (machineId) =>
+      request('/activation_codes/features', { method: 'GET', query: { machineId, templateName: 'hca' } }),
+    activateCode: (user_id, code) => request('/user_activation_codes/activation', { method: 'POST', body: { user_id, code } }),
     updateFeatureCount: (id, featuresKeyword) =>
       request('/user_codes/updateFeaturesCount', { method: 'POST', body: { id, featuresKeyword } })
   }

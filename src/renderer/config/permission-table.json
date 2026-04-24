@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "title": "权限列表（白名单）",
+  "columns": [
+    { "key": "key", "title": "权限Key" },
+    { "key": "name", "title": "名称" },
+    { "key": "scope", "title": "范围" },
+    { "key": "desc", "title": "说明" }
+  ],
+  "rows": [
+    {
+      "key": "soul",
+      "name": "Soul自动私聊",
+      "scope": "脚本",
+      "desc": "示例脚本，按脚本 key 授权"
+    },
+    {
+      "key": "demo_auto_chat",
+      "name": "打开微信",
+      "scope": "脚本",
+      "desc": "示例脚本，按脚本 key 授权"
+    }
+  ]
+}

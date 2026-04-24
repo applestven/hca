@@ -185,6 +185,15 @@ export default function DeviceControlPage() {
   }
 
   useEffect(() => {
+    // 进入设备中控时刷新一次权限，避免权限状态滞后
+    Promise.resolve(window.api?.permission?.refresh?.())
+      .then(() => {
+        pushLog('系统', '刷新权限', 'ok')
+      })
+      .catch((e) => {
+        pushLog('系统', '刷新权限', e?.message || String(e))
+      })
+
     loadDevices()
     // 轮询刷新（先简单实现，后续可改成事件驱动/节流）
     const t = setInterval(() => {
