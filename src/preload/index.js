@@ -42,6 +42,10 @@ const api = {
     connectWifi: (ip, port) => electronAPI.ipcRenderer.invoke('device:connect-wifi', { ip, port }),
     disconnect: (serial) => electronAPI.ipcRenderer.invoke('device:disconnect', { serial }),
     scrcpyStart: (serial) => electronAPI.ipcRenderer.invoke('device:scrcpy:start', { serial }),
+    // Scrcpy 预览窗口大小（持久化）
+    scrcpySettingsGet: (serial) => electronAPI.ipcRenderer.invoke('scrcpy:get-settings', { serial }),
+    scrcpySettingsSet: ({ serial, width, height, maxSize, scope }) =>
+      electronAPI.ipcRenderer.invoke('scrcpy:set-settings', { serial, width, height, maxSize, scope }),
     tap: (serial, x, y) => electronAPI.ipcRenderer.invoke('device:tap', { serial, x, y }),
     swipe: (serial, x1, y1, x2, y2, durationMs) =>
       electronAPI.ipcRenderer.invoke('device:swipe', { serial, x1, y1, x2, y2, durationMs }),

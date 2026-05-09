@@ -146,7 +146,7 @@ export function getScrcpyPath() {
   return join(dir, process.platform === 'win32' ? 'scrcpy.exe' : 'scrcpy')
 }
 
-export function spawnScrcpy({ serial, windowTitle } = {}) {
+export function spawnScrcpy({ serial, windowTitle, windowWidth, windowHeight, maxSize } = {}) {
   const scrcpyPath = getScrcpyPath()
 
   if (!fs.existsSync(scrcpyPath)) {
@@ -155,6 +155,16 @@ export function spawnScrcpy({ serial, windowTitle } = {}) {
 
   const args = []
   if (serial) args.push('-s', serial)
+
+  // 窗口大小（持久化能力由主进程保存，这里仅负责拼接 scrcpy 参数）
+  // 优先 maxSize，其次 windowWidth/windowHeight
+  if (Number.isFinite(maxSize) && maxSize > 0) {
+    args.push('--max-size', String(maxSize))
+  } else {
+    if (Number.isFinite(windowWidth) && windowWidth > 0) args.push('--window-width', String(windowWidth))
+    if (Number.isFinite(windowHeight) && windowHeight > 0) args.push('--window-height', String(windowHeight))
+  }
+
   if (windowTitle) args.push('--window-title', windowTitle)
 
   const child = spawn(scrcpyPath, args, {

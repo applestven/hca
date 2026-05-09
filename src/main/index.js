@@ -307,8 +307,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('device:scrcpy:start', async (_e, { serial } = {}) => {
     if (!serial) throw new Error('serial is required')
 
+    const def = scrcpyStore.get('default') || { width: 0, height: 0, maxSize: 0 }
+    const overrides = scrcpyStore.get('deviceOverrides') || {}
+    const s = overrides[serial] ? { ...def, ...overrides[serial] } : def
+
     // 先做“启动即可”，后续再做：进程列表管理/退出/复用/窗口嵌入
-    const child = spawnScrcpy({ serial, windowTitle: `HCA - ${serial}` })
+    const child = spawnScrcpy({
+      serial,
+      windowTitle: `HCA - ${serial}`,
+      windowWidth: s.width > 0 ? s.width : undefined,
+      windowHeight: s.height > 0 ? s.height : undefined,
+      maxSize: s.maxSize > 0 ? s.maxSize : undefined
+    })
     return { pid: child.pid }
   })
 
@@ -479,6 +489,51 @@ app.whenReady().then(async () => {
     if (!runId) throw new Error('runId is required')
     if (group) return stopScriptGroup(runId)
     return stopScript(runId)
+  })
+
+  // Scrcpy 预览设置（持久化）
+  // 说明：外部 scrcpy 窗口尺寸难以可靠自动读取，因此采用“保存参数 -> 下次启动时应用参数”。
+  const scrcpyStore = new Store({
+    name: 'hca-scrcpy',
+    defaults: {
+      default: { width: 0, height: 0, maxSize: 0 },
+      deviceOverrides: {}
+    }
+  })
+
+  ipcMain.handle('scrcpy:get-settings', async (_e, { serial } = {}) => {
+    const def = scrcpyStore.get('default') || { width: 0, height: 0, maxSize: 0 }
+    const overrides = scrcpyStore.get('deviceOverrides') || {}
+    const s = serial && overrides[serial] ? overrides[serial] : null
+    return { serial, settings: { ...def, ...(s || {}) } }
+  })
+
+  ipcMain.handle('scrcpy:set-settings', async (_e, { serial, width, height, maxSize, scope = 'device' } = {}) => {
+    const next = {
+      width: Number(width) || 0,
+      height: Number(height) || 0,
+      maxSize: Number(maxSize) || 0
+    }
+
+    const hasWH = next.width > 0 && next.height > 0
+    if (!hasWH) {
+      next.width = 0
+      next.height = 0
+    }
+    if (next.maxSize > 0 && hasWH) {
+      next.maxSize = 0
+    }
+
+    if (scope === 'global') {
+      scrcpyStore.set('default', next)
+      return { scope, settings: next }
+    }
+
+    if (!serial) throw new Error('serial is required for device scope')
+    const overrides = scrcpyStore.get('deviceOverrides') || {}
+    overrides[serial] = next
+    scrcpyStore.set('deviceOverrides', overrides)
+    return { scope: 'device', serial, settings: next }
   })
 
   await initUpdateModeFromPolicy()
