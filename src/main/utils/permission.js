@@ -94,8 +94,15 @@ export function createApiClient({ baseUrl }) {
 
     const payload = body === undefined ? undefined : JSON.stringify(body)
 
+    // 说明：
+    // - GET 请求不要强行带 content-type（有些后端/网关会因此走错误分支甚至 500）
+    // - 仅在有 body 时再声明 content-type
+    const baseHeaders = {
+      accept: 'application/json, text/plain, */*'
+    }
     const finalHeaders = {
-      'content-type': 'application/json',
+      ...baseHeaders,
+      ...(payload ? { 'content-type': 'application/json' } : {}),
       ...(headers || {})
     }
 
