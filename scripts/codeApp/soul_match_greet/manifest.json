@@ -2,8 +2,8 @@
   "name": "Soul循环匹配打招呼",
   "key": "soul_match_greet",
   "entry": "main.py",
-  "version": "0.3.0",
-  "description": "循环执行：灵魂匹配后发送打招呼内容；内容为空时默认发送「吃瓜」表情。",
+  "version": "0.3.1",
+  "description": "循环执行：灵魂匹配后发送打招呼内容；内容为空时默认发送「吃瓜」表情码。步骤日志实时输出。",
   "author": "hca",
   "category": "Soul",
   "params": [
@@ -21,6 +21,13 @@
       "required": false,
       "default": "",
       "placeholder": "不填则默认吃瓜表情"
+    },
+    {
+      "key": "interval",
+      "label": "轮次间隔(秒)",
+      "type": "number",
+      "required": false,
+      "default": 1.2
     }
   ]
 }

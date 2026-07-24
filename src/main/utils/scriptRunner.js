@@ -137,7 +137,10 @@ function buildBaseEnv() {
   const env = {
     ...process.env,
     HCA_ADB_PATH: adbPath,
-    HCA_ATX_PORT: process.env.HCA_ATX_PORT || '7912'
+    HCA_ATX_PORT: process.env.HCA_ATX_PORT || '7912',
+    // 强制脚本 stdout/stderr 用 UTF-8，避免中文步骤日志在 Windows 下乱码
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1'
   }
 
   // Windows Embedded Python：需要设置 PYTHONHOME，并确保 python._pth / python311._pth 含 Lib/site-packages 且启用 import site。
@@ -255,13 +258,15 @@ export function startScript({ key, params = {}, deviceSerials = [] } = {}, onEve
     }
 
     child.stdout.on('data', (buf) => {
-      const text = buf.toString()
+      const text = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf)
       // Python 可能一次输出多行
       const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
       for (const line of lines) {
         try {
           const obj = JSON.parse(line)
-          emit({ type: obj.type || 'log', data: obj })
+          const step = obj.step ? `[${obj.step}] ` : ''
+          const msg = obj.msg != null ? String(obj.msg) : JSON.stringify(obj)
+          emit({ type: obj.type || 'log', data: { ...obj, msg: `${step}${msg}` } })
         } catch {
           emit({ type: 'log', data: { msg: line } })
         }
@@ -269,7 +274,8 @@ export function startScript({ key, params = {}, deviceSerials = [] } = {}, onEve
     })
 
     child.stderr.on('data', (buf) => {
-      emit({ type: 'stderr', data: { msg: buf.toString() } })
+      const text = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf)
+      emit({ type: 'stderr', data: { msg: text } })
     })
 
     child.on('close', (code) => {

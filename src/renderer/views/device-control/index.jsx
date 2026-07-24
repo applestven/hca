@@ -15,7 +15,14 @@ import {
 import ScriptRunnerPanel from '@/components/ScriptRunnerPanel'
 
 const DEVICE_GROUP_UNGROUPED = '未分组'
-const AUTO_RECONNECT_COOLDOWN_MS = 20000
+/** 设备列表静默刷新间隔 */
+const DEVICE_POLL_MS = 10000
+/** 同一目标两次自动重连的最小间隔 */
+const AUTO_RECONNECT_COOLDOWN_MS = 60000
+/** 轮询中触发自动重连尝试的最小间隔（与列表刷新解耦） */
+const AUTO_RECONNECT_TICK_MS = 60000
+/** 连续失败时，自动重连日志的最小间隔（避免刷屏） */
+const AUTO_RECONNECT_FAIL_LOG_MS = 180000
 
 function nowTime() {
   const d = new Date()
@@ -107,6 +114,8 @@ export default function DeviceControlPage() {
   const [reconnecting, setReconnecting] = useState(() => new Set())
   const reconnectCooldownRef = useRef(new Map()) // target -> lastAttemptMs
   const autoReconnectInFlightRef = useRef(false)
+  const lastAutoReconnectTickRef = useRef(0)
+  const lastAutoReconnectFailLogRef = useRef(0)
   const devicesRef = useRef([])
   const autoReconnectRef = useRef(true)
 
@@ -194,12 +203,23 @@ export default function DeviceControlPage() {
     try {
       const results = await window.api.device.connectMany?.(targets, { concurrency: 4 })
       const ok = (results || []).filter((x) => x.ok).length
-      if ((results || []).length > 0) {
-        pushLog('系统', '自动重连', `ok=${ok}/${(results || []).length}`)
+      const total = (results || []).length
+      if (total > 0) {
+        if (ok > 0) {
+          pushLog('系统', '自动重连', `ok=${ok}/${total}`)
+          lastAutoReconnectFailLogRef.current = 0
+        } else if (now - (lastAutoReconnectFailLogRef.current || 0) >= AUTO_RECONNECT_FAIL_LOG_MS) {
+          // 连续失败降频打日志，避免每冷却一轮刷一条
+          lastAutoReconnectFailLogRef.current = now
+          pushLog('系统', '自动重连', `ok=0/${total}（失败日志已降频）`)
+        }
       }
       await loadDevices({ silent: true }).catch(() => {})
     } catch (e) {
-      pushLog('系统', '自动重连', e?.message || String(e))
+      if (now - (lastAutoReconnectFailLogRef.current || 0) >= AUTO_RECONNECT_FAIL_LOG_MS) {
+        lastAutoReconnectFailLogRef.current = now
+        pushLog('系统', '自动重连', e?.message || String(e))
+      }
     } finally {
       autoReconnectInFlightRef.current = false
       setAutoReconnectBusy(false)
@@ -334,15 +354,19 @@ export default function DeviceControlPage() {
       if (!cancelled) await tryAutoReconnect(mapped || [])
     })()
 
-    // 轮询刷新：静默，不闪 loading；顺带触发自动重连
+    // 轮询刷新设备列表；自动重连单独降频，避免刷屏/频繁 adb connect
     const t = setInterval(async () => {
       try {
         const mapped = await loadDevices({ silent: true })
-        await tryAutoReconnect(mapped)
+        const now = Date.now()
+        if (now - (lastAutoReconnectTickRef.current || 0) >= AUTO_RECONNECT_TICK_MS) {
+          lastAutoReconnectTickRef.current = now
+          await tryAutoReconnect(mapped)
+        }
       } catch {
         // ignore
       }
-    }, 5000)
+    }, DEVICE_POLL_MS)
 
     return () => {
       cancelled = true

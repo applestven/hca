@@ -52,6 +52,24 @@ function ParamField({ p, value, onChange }) {
   )
 }
 
+function coerceParams(scriptParams, rawParams) {
+  const out = { ...(rawParams || {}) }
+  for (const p of scriptParams || []) {
+    const key = p?.key
+    if (!key) continue
+    const raw = out[key]
+    if (p.type === 'number') {
+      if (raw === undefined || raw === null || String(raw).trim() === '') {
+        out[key] = p.default
+        continue
+      }
+      const n = Number(raw)
+      out[key] = Number.isFinite(n) ? n : raw
+    }
+  }
+  return out
+}
+
 export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
   const [scripts, setScripts] = useState([])
   const [selectedKey, setSelectedKey] = useState('')
@@ -90,7 +108,8 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
     if (!selected) return
     const next = {}
     for (const p of selected.params || []) {
-      next[p.key] = p.default
+      // 数字也先存字符串，避免输入过程 Number('')→0 / NaN
+      next[p.key] = p.default === undefined || p.default === null ? '' : String(p.default)
     }
     setParams(next)
   }, [selectedKey])
@@ -103,26 +122,31 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
       return
     }
 
+    const finalParams = coerceParams(selected?.params, params)
+
     // 校验必填参数
     for (const p of selected?.params || []) {
       if (!p?.required) continue
-      const v = params?.[p.key]
+      const v = finalParams?.[p.key]
       if (v === undefined || v === null || String(v).trim() === '') {
         const label = p.label || p.key
         showFriendlyError(`请填写必填参数：${label}`)
         return
       }
-      if (p.type === 'number' && !(Number(v) >= 1)) {
-        showFriendlyError(`${p.label || p.key} 必须为大于等于 1 的数字`)
-        return
+      if (p.type === 'number') {
+        const n = Number(v)
+        if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+          showFriendlyError(`${p.label || p.key} 必须为大于等于 1 的整数`)
+          return
+        }
       }
     }
 
     setBusy(true)
     try {
-      const r = await window.api?.scripts?.start?.({ key: selectedKey, params, deviceSerials })
+      const r = await window.api?.scripts?.start?.({ key: selectedKey, params: finalParams, deviceSerials })
       setLastRun(r)
-      pushLog?.('系统', '启动脚本', `ok(${selectedKey}) targets=${deviceSerials?.length || 0}`)
+      pushLog?.('系统', '启动脚本', `ok(${selectedKey}) loop=${finalParams?.loop ?? '-'} targets=${deviceSerials?.length || 0}`)
     } catch (e) {
       const msg = e?.message || String(e)
       pushLog?.('系统', '启动脚本', msg)
@@ -233,7 +257,8 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
                   onChange={(v) =>
                     setParams((prev) => ({
                       ...prev,
-                      [p.key]: p.type === 'number' ? Number(v) : v
+                      // 输入过程保持字符串，启动时再 coerce 成 number
+                      [p.key]: v
                     }))
                   }
                 />
