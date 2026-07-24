@@ -1,57 +1,9 @@
-import { spawn } from 'child_process'
 import { join } from 'path'
 import fs from 'fs'
-
-function getScrcpyDir() {
-  return join(process.cwd(), 'bin', 'scrcpy')
-}
-
-function getAdbPath() {
-  return join(getScrcpyDir(), process.platform === 'win32' ? 'adb.exe' : 'adb')
-}
-
-function runAdb(args, { timeoutMs = 20000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const adbPath = getAdbPath()
-    const child = spawn(adbPath, args, { windowsHide: true })
-
-    let stdout = ''
-    let stderr = ''
-
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL')
-      } catch {}
-      const err = new Error(`adb timeout after ${timeoutMs}ms: ${args.join(' ')}`)
-      err.stdout = stdout
-      err.stderr = stderr
-      reject(err)
-    }, timeoutMs)
-
-    child.stdout.on('data', (d) => (stdout += d.toString()))
-    child.stderr.on('data', (d) => (stderr += d.toString()))
-
-    child.on('error', (e) => {
-      clearTimeout(timer)
-      e.stdout = stdout
-      e.stderr = stderr
-      reject(e)
-    })
-
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) resolve({ stdout, stderr })
-      else {
-        const msg = (stderr || stdout || '').trim() || `adb exited with code ${code}`
-        const err = new Error(msg)
-        err.code = code
-        err.stdout = stdout
-        err.stderr = stderr
-        reject(err)
-      }
-    })
-  })
-}
+import {
+  runAdb,
+  adbConnect
+} from './adb'
 
 async function adbShell(serial, cmd) {
   const { stdout } = await runAdb(['-s', serial, 'shell', ...cmd])
@@ -70,6 +22,14 @@ export async function adbGetDeviceIp(serial) {
   const m2 = out2.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/)
   if (m2?.[1]) return m2[1]
 
+  // 再兜底：其它无线网卡名
+  const out3 = await adbShell(serial, ['sh', '-c', 'ip -o -4 addr show | awk \'{print $2,$4}\'']).catch(() => '')
+  for (const line of String(out3).split(/\r?\n/)) {
+    if (!/wlan|wifi|rmnet_data|ap/i.test(line)) continue
+    const m3 = line.match(/(\d+\.\d+\.\d+\.\d+)/)
+    if (m3?.[1] && !m3[1].startsWith('127.')) return m3[1]
+  }
+
   return ''
 }
 
@@ -78,8 +38,11 @@ export async function enableWifiTcpip(serial, port = 5555) {
   const ip = await adbGetDeviceIp(serial)
   if (!ip) throw new Error('无法自动获取设备 IP（请确认已连接 WiFi）')
 
-  const { stdout } = await runAdb(['connect', `${ip}:${port}`])
-  return { ip, port, message: stdout.trim() }
+  // 稍等设备切到 tcpip 模式
+  await new Promise((r) => setTimeout(r, 800))
+
+  const message = await adbConnect(ip, port)
+  return { ip, port, target: `${ip}:${port}`, message }
 }
 
 function findAtxAgentPath() {
@@ -117,83 +80,61 @@ function formatAdbError(e) {
     lower.includes('wrong password') ||
     lower.includes('pairing')
   ) {
-    hint.push('可能原因：配对码错误/已过期，或填错了“配对端口”。')
-    hint.push('请在手机「无线调试」页重新生成配对码，并使用页面中显示的“使用配对码配对设备”的 IP:端口。')
+    hint.push('可能原因：配对码错误/已过期，或 IP/端口不正确。')
+    hint.push('请在手机「无线调试」页重新生成配对码后重试。')
   }
 
-  if (lower.includes('connection refused') || lower.includes('no route') || lower.includes('timed out')) {
-    hint.push('可能原因：手机与电脑不在同一 WiFi/网段，或系统/防火墙拦截了端口。')
+  if (
+    lower.includes('connection refused') ||
+    lower.includes('no route') ||
+    lower.includes('timed out') ||
+    lower.includes('timeout') ||
+    lower.includes('failed to connect') ||
+    lower.includes('unable to connect')
+  ) {
+    hint.push('可能原因：手机与电脑不在同一 WiFi/网段，端口未开放，或 3 秒内未能连通。')
   }
 
   if (hint.length === 0) return raw
   return `${hint.join('\n')}\n\n--- adb 原始输出 ---\n${raw}`
 }
 
-async function guessWifiConnectTargetFromPairIp(pairIp) {
-  // Android 11+：配对使用一个随机端口（pairing port），连接常用另一个端口（connect port）。
-  // 这里做保守探测：优先尝试常见端口集合。
-  const ports = [5555, 37099, 37123, 37173, 37231]
-  for (const p of ports) {
-    try {
-      const { stdout } = await runAdb(['connect', `${pairIp}:${p}`], { timeoutMs: 8000 })
-      const s = stdout.trim()
-      // 成功形态：connected to ... / already connected to ...
-      if (/connected to|already connected to/i.test(s)) {
-        return { target: `${pairIp}:${p}`, message: s }
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return { target: '', message: '' }
-}
+/** WiFi pair/connect 超时（毫秒） */
+const WIFI_ADB_TIMEOUT_MS = 3000
 
+/**
+ * Android 11+ 无线调试：先 adb pair，再 adb connect（同一 IP:端口）
+ * 任一步 3 秒内失败即抛错，不做端口探测/重试。
+ * @param {string} ip
+ * @param {number|string} port
+ * @param {string} code 配对码
+ */
 export async function pairAndConnect(ip, port, code) {
-  const target = `${ip}:${port}`
+  const p = Number(port)
+  if (!Number.isFinite(p) || p <= 0) throw new Error('端口无效')
+  const target = `${String(ip).trim()}:${p}`
+  const pairCode = String(code || '').trim()
+  if (!pairCode) throw new Error('配对码不能为空')
+
   try {
-    const { stdout: pairOut } = await runAdb(['pair', target, code], { timeoutMs: 20000 })
+    // adb pair IP:PORT CODE
+    const { stdout: pairOut } = await runAdb(['pair', target, pairCode], {
+      timeoutMs: WIFI_ADB_TIMEOUT_MS
+    })
 
-    // 尝试 1：直接 connect 到同一个 ip:port（部分机型可用）
-    let connOut = ''
-    try {
-      const { stdout } = await runAdb(['connect', target], { timeoutMs: 15000 })
-      connOut = stdout.trim()
-    } catch (e) {
-      connOut = ''
-    }
+    // adb connect IP:PORT（同一端口，3 秒超时）
+    const connectOut = await adbConnect(ip, p)
 
-    // 尝试 2：探测常见 connect 端口（很多机型 connect port != pairing port）
-    let guessed = null
-    if (!/connected to|already connected to/i.test(connOut)) {
-      guessed = await guessWifiConnectTargetFromPairIp(ip)
-      if (guessed?.target) {
-        connOut = guessed.message
-      }
-    }
-
-    // 返回更多信息，方便 UI 提示用户“需要用 IP 地址和端口再连一次”
-    const result = {
+    return {
       target,
-      pair: pairOut.trim(),
-      connect: connOut,
-      connectTarget: guessed?.target || (/connected to|already connected to/i.test(connOut) ? target : '')
+      pair: String(pairOut || '').trim(),
+      connect: connectOut,
+      connectTarget: target,
+      ip: String(ip).trim(),
+      port: p
     }
-
-    // 若仍然没连上，将原因显式返回（不抛错，让 UI 能提示用户去填手机的“IP 地址和端口”）
-    if (!/connected to|already connected to/i.test(connOut)) {
-      return {
-        ...result,
-        warnings: [
-          '已完成配对，但未能自动连接到设备。',
-          '请在手机「无线调试」页查看“IP 地址和端口”，并到本页“手动连接”中填写该端口进行 connect。'
-        ]
-      }
-    }
-
-    return result
   } catch (e) {
-    const err = new Error(formatAdbError(e))
-    throw err
+    throw new Error(formatAdbError(e))
   }
 }
 

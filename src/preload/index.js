@@ -40,7 +40,22 @@ const api = {
   device: {
     list: () => electronAPI.ipcRenderer.invoke('device:list'),
     connectWifi: (ip, port) => electronAPI.ipcRenderer.invoke('device:connect-wifi', { ip, port }),
-    disconnect: (serial) => electronAPI.ipcRenderer.invoke('device:disconnect', { serial }),
+    /**
+     * 添加 WiFi 设备（输入即存本地）
+     * - 有 pairCode：adb pair IP:port CODE → adb connect IP:port
+     * - 无 pairCode：直接 adb connect IP:port
+     * @param {{ ip: string, port?: number|string, pairCode?: string }} payload
+     */
+    addWifi: (payload) => electronAPI.ipcRenderer.invoke('device:add-wifi', payload),
+    getWifiForm: () => electronAPI.ipcRenderer.invoke('device:wifi-form:get'),
+    setWifiForm: (payload) => electronAPI.ipcRenderer.invoke('device:wifi-form:set', payload),
+    connectMany: (targets, options) =>
+      electronAPI.ipcRenderer.invoke('device:connect-many', {
+        targets,
+        concurrency: options?.concurrency
+      }),
+    disconnect: (serial, options) =>
+      electronAPI.ipcRenderer.invoke('device:disconnect', { serial, forget: options?.forget }),
     scrcpyStart: (serial) => electronAPI.ipcRenderer.invoke('device:scrcpy:start', { serial }),
     // Scrcpy 预览窗口大小（持久化）
     scrcpySettingsGet: (serial) => electronAPI.ipcRenderer.invoke('scrcpy:get-settings', { serial }),
@@ -54,13 +69,19 @@ const api = {
     startApp: (serial, pkg, activity) =>
       electronAPI.ipcRenderer.invoke('device:start-app', { serial, pkg, activity }),
     reconnect: (serial) => electronAPI.ipcRenderer.invoke('device:reconnect', { serial }),
-    scanRange: (range, port, options) =>
-      electronAPI.ipcRenderer.invoke('device:scan-range', {
-        range,
-        port,
-        concurrency: options?.concurrency,
-        pingFirst: options?.pingFirst
+    listKnownWifi: () => electronAPI.ipcRenderer.invoke('device:known-wifi:list'),
+    forgetKnownWifi: (target) => electronAPI.ipcRenderer.invoke('device:known-wifi:forget', { target }),
+    rememberKnownWifi: (payload) => electronAPI.ipcRenderer.invoke('device:known-wifi:remember', payload),
+    getAutoReconnect: () => electronAPI.ipcRenderer.invoke('device:auto-reconnect:get'),
+    setAutoReconnect: (enabled) =>
+      electronAPI.ipcRenderer.invoke('device:auto-reconnect:set', { enabled }),
+    autoConnectKnown: (options) =>
+      electronAPI.ipcRenderer.invoke('device:auto-connect-known', {
+        concurrency: options?.concurrency
       })
+  },
+  adb: {
+    restart: () => electronAPI.ipcRenderer.invoke('adb:restart')
   },
   scripts,
   onboarding,

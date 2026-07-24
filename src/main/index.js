@@ -19,8 +19,9 @@ import {
   adbInputText,
   adbKeyEvent,
   adbStartApp,
-  adbScanIpRange,
-  adbReconnectSmart
+  adbReconnectSmart,
+  adbAutoConnectTargets,
+  adbConnectMany
 } from './utils/adb'
 
 import {
@@ -42,6 +43,77 @@ let UPDATE_POLICY = null
 // 提前注册 IPC，避免渲染进程过早调用导致 "No handler registered"
 ipcMain.handle('update:mode', () => UPDATE_MODE)
 ipcMain.handle('update:policy', () => UPDATE_POLICY)
+
+// WiFi 已知设备 / 自动重连（electron-store 持久化）
+const deviceStore = new Store({
+  name: 'hca-devices',
+  defaults: {
+    knownWifi: [], // [{ target, ip, port, lastConnectedAt }]
+    autoReconnect: true,
+    // 设备中控「添加 WiFi」表单上次填写内容
+    wifiForm: { ip: '', port: '5555', pairCode: '' }
+  }
+})
+
+function saveWifiForm({ ip, port, pairCode } = {}) {
+  deviceStore.set('wifiForm', {
+    ip: String(ip || '').trim(),
+    port: String(port ?? '5555').trim() || '5555',
+    pairCode: String(pairCode || '').trim()
+  })
+}
+
+function getWifiForm() {
+  const form = deviceStore.get('wifiForm') || {}
+  return {
+    ip: String(form.ip || ''),
+    port: String(form.port || '5555'),
+    pairCode: String(form.pairCode || '')
+  }
+}
+
+function rememberWifiTarget(ip, port) {
+  const p = Number(port) || 5555
+  const target = `${String(ip).trim()}:${p}`
+  if (!String(ip).trim() || !target.includes(':')) return
+  const list = deviceStore.get('knownWifi') || []
+  const next = [
+    { target, ip: String(ip).trim(), port: p, lastConnectedAt: Date.now() },
+    ...list.filter((x) => x?.target !== target)
+  ].slice(0, 64)
+  deviceStore.set('knownWifi', next)
+}
+
+function rememberWifiFromTarget(target) {
+  const t = String(target || '').trim()
+  if (!t.includes(':')) return
+  const [ip, portStr] = t.split(':')
+  rememberWifiTarget(ip, Number(portStr) || 5555)
+}
+
+function forgetWifiTarget(target) {
+  const t = String(target || '').trim()
+  const list = deviceStore.get('knownWifi') || []
+  deviceStore.set(
+    'knownWifi',
+    list.filter((x) => x?.target !== t)
+  )
+}
+
+async function autoConnectKnownWifi({ concurrency = 4 } = {}) {
+  if (!deviceStore.get('autoReconnect')) {
+    return { skipped: true, reason: 'autoReconnect disabled', results: [] }
+  }
+  const known = deviceStore.get('knownWifi') || []
+  const targets = known.map((x) => x?.target).filter(Boolean)
+  if (!targets.length) return { skipped: true, reason: 'no known wifi', results: [] }
+
+  const results = await adbAutoConnectTargets(targets, { concurrency })
+  for (const r of results) {
+    if (r?.ok && r?.target) rememberWifiFromTarget(r.target)
+  }
+  return { skipped: false, results }
+}
 
 // 主题配置（electron-store 持久化）
 const themeStore = new Store({
@@ -300,8 +372,91 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('device:connect-wifi', async (_e, { ip, port } = {}) => {
     if (!ip) throw new Error('ip is required')
-    const out = await adbConnect(ip, port ?? 5555)
+    const p = port ?? 5555
+    // 输入即落本地，便于自动重连
+    rememberWifiTarget(ip, p)
+    const out = await adbConnect(ip, p)
     return out
+  })
+
+  /**
+   * 添加 WiFi 设备：
+   * - 有配对码：adb pair IP:port CODE → adb connect IP:port（同一端口）
+   * - 无配对码：adb connect IP:port
+   * 点击即保存表单（ip/port/pairCode）到本地，供下次自动回填
+   */
+  ipcMain.handle('device:add-wifi', async (_e, { ip, port, pairCode } = {}) => {
+    if (!ip) throw new Error('ip is required')
+    const p = Number(port) || 5555
+    const code = String(pairCode || '').trim()
+
+    // 点击即保存表单 + knownWifi
+    saveWifiForm({ ip, port: p, pairCode: code })
+    rememberWifiTarget(ip, p)
+
+    if (code) {
+      // 配对与连接使用同一端口
+      const r = await pairAndConnect(ip, p, code)
+      if (r?.connectTarget) rememberWifiFromTarget(r.connectTarget)
+      else if (r?.port) rememberWifiTarget(ip, r.port)
+      return { mode: 'pair', ip, port: p, ...r }
+    }
+
+    // 无配对码：直接 adb connect
+    const message = await adbConnect(ip, p)
+    return {
+      mode: 'connect',
+      ip,
+      port: p,
+      target: `${String(ip).trim()}:${p}`,
+      message
+    }
+  })
+
+  ipcMain.handle('device:wifi-form:get', () => getWifiForm())
+
+  ipcMain.handle('device:wifi-form:set', (_e, payload = {}) => {
+    saveWifiForm(payload)
+    return getWifiForm()
+  })
+
+  ipcMain.handle('device:connect-many', async (_e, { targets, concurrency } = {}) => {
+    const list = Array.isArray(targets) ? targets : []
+    const results = await adbConnectMany(list, {
+      concurrency: concurrency ?? 8,
+      pingFirst: false,
+      tcpProbeFirst: true
+    })
+    for (const r of results) {
+      if (r?.ok && r?.target) rememberWifiFromTarget(r.target)
+    }
+    return results
+  })
+
+  ipcMain.handle('device:known-wifi:list', () => deviceStore.get('knownWifi') || [])
+
+  ipcMain.handle('device:known-wifi:forget', (_e, { target } = {}) => {
+    if (!target) throw new Error('target is required')
+    forgetWifiTarget(target)
+    return deviceStore.get('knownWifi') || []
+  })
+
+  ipcMain.handle('device:known-wifi:remember', (_e, { ip, port, target } = {}) => {
+    if (target) rememberWifiFromTarget(target)
+    else if (ip) rememberWifiTarget(ip, port ?? 5555)
+    else throw new Error('ip or target is required')
+    return deviceStore.get('knownWifi') || []
+  })
+
+  ipcMain.handle('device:auto-reconnect:get', () => Boolean(deviceStore.get('autoReconnect')))
+
+  ipcMain.handle('device:auto-reconnect:set', (_e, { enabled } = {}) => {
+    deviceStore.set('autoReconnect', Boolean(enabled))
+    return Boolean(deviceStore.get('autoReconnect'))
+  })
+
+  ipcMain.handle('device:auto-connect-known', async (_e, { concurrency } = {}) => {
+    return await autoConnectKnownWifi({ concurrency: concurrency ?? 4 })
   })
 
   ipcMain.handle('device:scrcpy:start', async (_e, { serial } = {}) => {
@@ -329,9 +484,10 @@ app.whenReady().then(async () => {
     return out
   })
 
-  ipcMain.handle('device:disconnect', async (_e, { serial } = {}) => {
+  ipcMain.handle('device:disconnect', async (_e, { serial, forget } = {}) => {
     if (!serial) throw new Error('serial is required')
     const out = await adbDisconnect(serial)
+    if (forget && String(serial).includes(':')) forgetWifiTarget(serial)
     return out
   })
 
@@ -361,29 +517,28 @@ app.whenReady().then(async () => {
     return await adbStartApp(serial, pkg, activity)
   })
 
-  ipcMain.handle('device:scan-range', async (_e, { range, port, concurrency, pingFirst } = {}) => {
-    const r = await adbScanIpRange(range, {
-      port: port ?? 5555,
-      concurrency: concurrency ?? 50,
-      pingFirst: pingFirst ?? true
-    })
-    return r
-  })
-
   ipcMain.handle('device:reconnect', async (_e, { serial } = {}) => {
     if (!serial) throw new Error('serial is required')
-    return await adbReconnectSmart(serial)
+    const out = await adbReconnectSmart(serial)
+    if (String(serial).includes(':')) rememberWifiFromTarget(serial)
+    return out
   })
 
   // Setup Wizard / Onboarding
   ipcMain.handle('onboarding:enable-wifi-tcpip', async (_e, { serial, port } = {}) => {
     if (!serial) throw new Error('serial is required')
-    return await enableWifiTcpip(serial, port ?? 5555)
+    const r = await enableWifiTcpip(serial, port ?? 5555)
+    if (r?.ip) rememberWifiTarget(r.ip, r.port ?? 5555)
+    return r
   })
 
   ipcMain.handle('onboarding:pair-and-connect', async (_e, { ip, port, code } = {}) => {
     if (!ip || !port || !code) throw new Error('ip/port/code is required')
-    return await pairAndConnect(ip, port, code)
+    // 配对前先记下 IP
+    rememberWifiTarget(ip, port)
+    const r = await pairAndConnect(ip, port, code)
+    if (r?.connectTarget) rememberWifiFromTarget(r.connectTarget)
+    return r
   })
 
   ipcMain.handle('onboarding:atx-check', async (_e, { serial } = {}) => {
@@ -540,6 +695,11 @@ app.whenReady().then(async () => {
 
   const mainWindow = createWindow()
   wireAutoUpdater(mainWindow)
+
+  // 启动后自动连接历史 WiFi 设备（不阻塞窗口创建）
+  setTimeout(() => {
+    autoConnectKnownWifi({ concurrency: 4 }).catch(() => {})
+  }, 1500)
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

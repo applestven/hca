@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -15,6 +15,7 @@ import {
 import ScriptRunnerPanel from '@/components/ScriptRunnerPanel'
 
 const DEVICE_GROUP_UNGROUPED = '未分组'
+const AUTO_RECONNECT_COOLDOWN_MS = 20000
 
 function nowTime() {
   const d = new Date()
@@ -43,6 +44,23 @@ function serializeLogsToText(items) {
   return [header, ...lines].join('\r\n')
 }
 
+function mapAdbDevices(list) {
+  return (list || []).map((d) => {
+    const conn = d.ip ? 'WiFi' : 'USB'
+    const status = d.state === 'device' ? 'online' : 'offline'
+    const name = d.model || d.serial
+    return {
+      id: d.serial,
+      name,
+      sn: d.serial,
+      ip: d.ip || '',
+      group: DEVICE_GROUP_UNGROUPED,
+      status,
+      conn
+    }
+  })
+}
+
 export default function DeviceControlPage() {
   const [devices, setDevices] = useState([])
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -50,20 +68,11 @@ export default function DeviceControlPage() {
   const [filterGroup, setFilterGroup] = useState('全部')
   const [keyword, setKeyword] = useState('')
 
-  // WiFi 连接
+  // WiFi 连接（输入 IP 即存本地；有配对码走 pair，无则直接 connect；端口共用）
   const [wifiIp, setWifiIp] = useState('')
   const [wifiPort, setWifiPort] = useState('5555')
+  const [pairCode, setPairCode] = useState('')
   const [busy, setBusy] = useState(false)
-
-  // IP 段扫描
-  const [scanRange, setScanRange] = useState('192.168.110.x')
-  const [scanPort, setScanPort] = useState('5555')
-  const [scanConcurrency, setScanConcurrency] = useState('50')
-  const [scanPingFirst, setScanPingFirst] = useState(true)
-
-  const [scanLastResult, setScanLastResult] = useState(null)
-  const [scanFilter, setScanFilter] = useState('all') // all | ok | failed | skipped
-  const [scanKeyword, setScanKeyword] = useState('')
 
   const [tab, setTab] = useState('control') // control | batch | script | masterSlave
 
@@ -94,10 +103,15 @@ export default function DeviceControlPage() {
 
   // 自动重连
   const [autoReconnect, setAutoReconnect] = useState(true)
+  const [autoReconnectBusy, setAutoReconnectBusy] = useState(false)
   const [reconnecting, setReconnecting] = useState(() => new Set())
+  const reconnectCooldownRef = useRef(new Map()) // target -> lastAttemptMs
+  const autoReconnectInFlightRef = useRef(false)
+  const devicesRef = useRef([])
+  const autoReconnectRef = useRef(true)
 
   const pushLog = (device, action, result) => {
-    setLogs((prev) => [{ time: nowTime(), device, action, result }, ...prev])
+    setLogs((prev) => [{ time: nowTime(), device, action, result }, ...prev].slice(0, 500))
   }
 
   const reconnectOne = async (serial, name) => {
@@ -120,54 +134,141 @@ export default function DeviceControlPage() {
         return next
       })
       setBusy(false)
-      await loadDevices().catch(() => {})
+      await loadDevices({ silent: true }).catch(() => {})
     }
   }
 
-  const loadDevices = async () => {
-    setBusy(true)
+  const loadDevices = async ({ silent = false } = {}) => {
+    if (!silent) setBusy(true)
     try {
       const list = await window.api?.device?.list?.()
-      const mapped = (list || []).map((d) => {
-        const conn = d.ip ? 'WiFi' : 'USB'
-        const status = d.state === 'device' ? 'online' : 'offline'
-        const name = d.model || d.serial
-        return {
-          id: d.serial,
-          name,
-          sn: d.serial,
-          ip: d.ip || '',
-          group: DEVICE_GROUP_UNGROUPED,
-          status,
-          conn
-        }
-      })
+      const mapped = mapAdbDevices(list)
+      devicesRef.current = mapped
       setDevices(mapped)
-      pushLog('系统', '刷新设备列表', `ok(${mapped.length})`)
+      if (!silent) pushLog('系统', '刷新设备列表', `ok(${mapped.length})`)
+      return mapped
     } catch (e) {
-      pushLog('系统', '刷新设备列表', e?.message || String(e))
+      if (!silent) pushLog('系统', '刷新设备列表', e?.message || String(e))
+      throw e
     } finally {
-      setBusy(false)
+      if (!silent) setBusy(false)
+    }
+  }
+
+  const tryAutoReconnect = async (mappedDevices) => {
+    if (!autoReconnectRef.current) return
+    if (autoReconnectInFlightRef.current) return
+    if (!window.api?.device) return
+
+    const now = Date.now()
+    const cooldown = reconnectCooldownRef.current
+
+    const offlineWifi = (mappedDevices || [])
+      .filter((d) => d.status !== 'online' && String(d.sn || '').includes(':'))
+      .map((d) => d.sn)
+
+    let knownTargets = []
+    try {
+      const known = (await window.api.device.listKnownWifi?.()) || []
+      const onlineSet = new Set(
+        (mappedDevices || []).filter((d) => d.status === 'online').map((d) => d.sn)
+      )
+      knownTargets = known
+        .map((x) => x?.target)
+        .filter((t) => t && t.includes(':') && !onlineSet.has(t))
+    } catch {
+      // ignore
+    }
+
+    const targets = Array.from(new Set([...offlineWifi, ...knownTargets])).filter((t) => {
+      const last = cooldown.get(t) || 0
+      return now - last >= AUTO_RECONNECT_COOLDOWN_MS
+    })
+
+    if (!targets.length) return
+
+    autoReconnectInFlightRef.current = true
+    setAutoReconnectBusy(true)
+    for (const t of targets) cooldown.set(t, now)
+
+    try {
+      const results = await window.api.device.connectMany?.(targets, { concurrency: 4 })
+      const ok = (results || []).filter((x) => x.ok).length
+      if ((results || []).length > 0) {
+        pushLog('系统', '自动重连', `ok=${ok}/${(results || []).length}`)
+      }
+      await loadDevices({ silent: true }).catch(() => {})
+    } catch (e) {
+      pushLog('系统', '自动重连', e?.message || String(e))
+    } finally {
+      autoReconnectInFlightRef.current = false
+      setAutoReconnectBusy(false)
     }
   }
 
   const connectWifi = async () => {
     const ip = wifiIp.trim()
     const port = Number(String(wifiPort).trim() || '5555')
+    const code = pairCode.trim()
+
     if (!ip) {
-      pushLog('系统', 'WiFi连接', '请输入IP')
+      pushLog('系统', '添加WiFi设备', '请输入IP')
       return
     }
+    if (!Number.isFinite(port) || port <= 0) {
+      pushLog('系统', '添加WiFi设备', '请输入有效端口')
+      return
+    }
+
     setBusy(true)
-    pushLog('系统', `adb connect ${ip}:${port}`, '...')
+    const action = code
+      ? `adb pair ${ip}:${port} **** → adb connect ${ip}:${port}`
+      : `adb connect ${ip}:${port}`
+    pushLog('系统', action, '...')
+
     try {
-      const out = await window.api?.device?.connectWifi?.(ip, port)
-      pushLog('系统', `adb connect ${ip}:${port}`, out || 'ok')
-      await loadDevices()
+      const r = await window.api?.device?.addWifi?.({
+        ip,
+        port,
+        pairCode: code || undefined
+      })
+
+      if (r?.mode === 'pair') {
+        const target = r.connectTarget || `${ip}:${port}`
+        const msg = [
+          r.pair ? `pair: ${r.pair}` : '',
+          r.connect || r.message || '',
+          Array.isArray(r.warnings) ? r.warnings.join(' ') : ''
+        ]
+          .filter(Boolean)
+          .join('\n')
+        pushLog('系统', `配对并连接 ${target}`, msg || 'ok')
+      } else {
+        pushLog('系统', `adb connect ${ip}:${port}`, r?.message || 'ok')
+      }
+
+      await loadDevices({ silent: true })
     } catch (e) {
-      pushLog('系统', `adb connect ${ip}:${port}`, e?.message || String(e))
+      pushLog('系统', action, e?.message || String(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const onToggleAutoReconnect = async (checked) => {
+    setAutoReconnect(checked)
+    autoReconnectRef.current = checked
+    try {
+      await window.api?.device?.setAutoReconnect?.(checked)
+      pushLog('系统', '自动重连', checked ? '已开启' : '已关闭')
+      if (checked) {
+        const mapped = devicesRef.current.length
+          ? devicesRef.current
+          : await loadDevices({ silent: true })
+        await tryAutoReconnect(mapped)
+      }
+    } catch (e) {
+      pushLog('系统', '自动重连设置', e?.message || String(e))
     }
   }
 
@@ -194,13 +295,69 @@ export default function DeviceControlPage() {
         pushLog('系统', '刷新权限', e?.message || String(e))
       })
 
-    loadDevices()
-    // 轮询刷新（先简单实现，后续可改成事件驱动/节流）
-    const t = setInterval(() => {
-      loadDevices()
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const form = await window.api?.device?.getWifiForm?.()
+        if (!cancelled && form) {
+          if (form.ip) setWifiIp(form.ip)
+          if (form.port) setWifiPort(String(form.port))
+          if (form.pairCode != null) setPairCode(String(form.pairCode))
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const enabled = await window.api?.device?.getAutoReconnect?.()
+        if (!cancelled && typeof enabled === 'boolean') {
+          setAutoReconnect(enabled)
+          autoReconnectRef.current = enabled
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const boot = await window.api?.device?.autoConnectKnown?.({ concurrency: 4 })
+        if (!cancelled && boot && !boot.skipped) {
+          const ok = (boot.results || []).filter((x) => x.ok).length
+          pushLog('系统', '启动自动连接', `ok=${ok}/${(boot.results || []).length}`)
+        }
+      } catch (e) {
+        if (!cancelled) pushLog('系统', '启动自动连接', e?.message || String(e))
+      }
+
+      if (cancelled) return
+      const mapped = await loadDevices().catch(() => [])
+      if (!cancelled) await tryAutoReconnect(mapped || [])
+    })()
+
+    // 轮询刷新：静默，不闪 loading；顺带触发自动重连
+    const t = setInterval(async () => {
+      try {
+        const mapped = await loadDevices({ silent: true })
+        await tryAutoReconnect(mapped)
+      } catch {
+        // ignore
+      }
     }, 5000)
-    return () => clearInterval(t)
+
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    devicesRef.current = devices
+  }, [devices])
+
+  useEffect(() => {
+    autoReconnectRef.current = autoReconnect
+  }, [autoReconnect])
 
   // 选中设备 → 联动控制：
   // - 单选时，自动设置为当前控制设备
@@ -278,7 +435,7 @@ export default function DeviceControlPage() {
       }
     } finally {
       setBusy(false)
-      await loadDevices().catch(() => {})
+      await loadDevices({ silent: true }).catch(() => {})
     }
   }
 
@@ -322,86 +479,24 @@ export default function DeviceControlPage() {
     await runOnTargets(targets, label, (d) => window.api?.device?.keyevent?.(d.sn, keyCode))
   }
 
-  const scanIpRange = async () => {
-    const range = scanRange.trim()
-    const port = Number(String(scanPort).trim() || '5555')
-    const concurrency = Number(String(scanConcurrency).trim() || '50')
-
-    if (!range) {
-      pushLog('系统', 'IP段扫描', '请输入扫描范围')
-      return
-    }
-
+  const removeDevice = async (d) => {
     setBusy(true)
     try {
-      const r = await window.api?.device?.scanRange?.(range, port, {
-        concurrency,
-        pingFirst: scanPingFirst
-      })
-
-      setScanLastResult(r)
-      setScanFilter('all')
-      setScanKeyword('')
-
-      const ok = (r?.results || []).filter((x) => x.ok).length
-      const total = r?.count ?? (r?.results || []).length
-      pushLog('系统', `扫描 ${r?.startIp || ''}-${r?.endIp || ''}`, `ok=${ok}/${total}`)
-
-      // 可选：把失败信息也写入日志（避免刷屏，仅写前 10 条）
-      ;(r?.results || [])
-        .filter((x) => !x.ok && !x.skipped)
-        .slice(0, 10)
-        .forEach((x) => pushLog(x.target || x.ip, 'adb connect', x.message || 'failed'))
-
-      await loadDevices()
-    } catch (e) {
-      pushLog('系统', 'IP段扫描', e?.message || String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const scanRows = useMemo(() => {
-    const rows = scanLastResult?.results || []
-    const k = scanKeyword.trim().toLowerCase()
-
-    return rows
-      .filter((r) => {
-        if (scanFilter === 'ok') return Boolean(r.ok)
-        if (scanFilter === 'failed') return !r.ok && !r.skipped
-        if (scanFilter === 'skipped') return Boolean(r.skipped)
-        return true
-      })
-      .filter((r) => {
-        if (!k) return true
-        return (
-          String(r.ip || '').toLowerCase().includes(k) ||
-          String(r.target || '').toLowerCase().includes(k) ||
-          String(r.message || '').toLowerCase().includes(k)
-        )
-      })
-  }, [scanLastResult, scanFilter, scanKeyword])
-
-  const retryScanRows = async (rows) => {
-    if (!rows?.length) {
-      pushLog('系统', '重试扫描', '无可重试项')
-      return
-    }
-
-    const port = Number(String(scanPort).trim() || '5555')
-
-    setBusy(true)
-    try {
-      // 复用 connectWifi 能力逐个重试（简单可靠；后续可做批量 IPC）
-      for (const r of rows) {
-        try {
-          const out = await window.api?.device?.connectWifi?.(r.ip, port)
-          pushLog(r.target || r.ip, '重试 connect', out || 'ok')
-        } catch (e) {
-          pushLog(r.target || r.ip, '重试 connect', e?.message || String(e))
-        }
+      if (String(d.sn || '').includes(':')) {
+        await window.api?.device?.disconnect?.(d.sn, { forget: true })
+        pushLog(d.name, '断开并遗忘 WiFi', 'ok')
+      } else {
+        pushLog(d.name, '移除设备(本地UI)', 'ok')
       }
-      await loadDevices()
+      setDevices((prev) => prev.filter((x) => x.id !== d.id))
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(d.id)
+        return next
+      })
+      await loadDevices({ silent: true }).catch(() => {})
+    } catch (e) {
+      pushLog(d.name, '移除设备', e?.message || String(e))
     } finally {
       setBusy(false)
     }
@@ -478,14 +573,29 @@ export default function DeviceControlPage() {
 
               <label className="flex items-center justify-between text-sm">
                 <span>自动重连</span>
-                <input type="checkbox" checked={autoReconnect} onChange={(e) => setAutoReconnect(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={autoReconnect}
+                  onChange={(e) => onToggleAutoReconnect(e.target.checked)}
+                />
               </label>
 
-              {devices.some((d) => d.status !== 'online') && (
-                <div className="text-xs text-rose-600">
-                  ⚠ 有设备离线{autoReconnect ? '，自动重连中…' : ''}
-                </div>
-              )}
+              {(() => {
+                const offlineWifi = devices.some(
+                  (d) => d.status !== 'online' && String(d.sn || '').includes(':')
+                )
+                const anyOffline = devices.some((d) => d.status !== 'online')
+                if (!autoReconnectBusy && !anyOffline) return null
+                return (
+                  <div className="text-xs text-rose-600">
+                    {autoReconnectBusy
+                      ? '🔄 自动重连中…'
+                      : anyOffline
+                        ? `⚠ 有设备离线${autoReconnect && offlineWifi ? '，将按冷却自动重连 WiFi 设备' : ''}`
+                        : null}
+                  </div>
+                )
+              })()}
 
               <div className="grid grid-cols-8 gap-2 items-end">
                 <div className="col-span-5">
@@ -505,6 +615,21 @@ export default function DeviceControlPage() {
                     value={wifiPort}
                     onChange={(e) => setWifiPort(e.target.value)}
                   />
+                </div>
+
+                <div className="col-span-8">
+                  <Label className="text-xs">配对码（可选）</Label>
+                  <Input
+                    className="mt-1 h-9"
+                    placeholder="不填则直接 connect；填写则先 pair 再 connect"
+                    value={pairCode}
+                    onChange={(e) => setPairCode(e.target.value)}
+                  />
+                </div>
+
+                <div className="col-span-8 text-[11px] text-muted-foreground leading-snug">
+                  填配对码：<code>adb pair IP:端口</code> → <code>adb connect IP:端口</code>；不填：直接{' '}
+                  <code>adb connect</code>。IP 提交后立即写入本地。
                 </div>
 
                 <div className="col-span-8 flex gap-2">
@@ -535,146 +660,6 @@ export default function DeviceControlPage() {
                   </Button>
                 </div>
               </div>
-            </div>
-
-            {/* 扫描局域网（IP 段） */}
-            <div className="mt-2 grid grid-cols-1 gap-2 rounded-lg border p-2">
-              <div className="text-sm font-medium">IP 段扫描</div>
-              <div className="text-xs text-muted-foreground">
-                支持：<code>192.168.110.x</code> / <code>192.168.110.0/24</code> / <code>192.168.110.1-255</code> / <code>startIP-endIP</code>
-              </div>
-
-              <div>
-                <Label className="text-xs">扫描范围</Label>
-                <Input
-                  className="mt-1 h-9"
-                  placeholder="192.168.110.x"
-                  value={scanRange}
-                  onChange={(e) => setScanRange(e.target.value)}
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs">端口</Label>
-                  <Input className="mt-1 h-9" value={scanPort} onChange={(e) => setScanPort(e.target.value)} />
-                </div>
-                <div>
-                  <Label className="text-xs">并发</Label>
-                  <Input
-                    className="mt-1 h-9"
-                    value={scanConcurrency}
-                    onChange={(e) => setScanConcurrency(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={scanPingFirst} onChange={(e) => setScanPingFirst(e.target.checked)} />
-                先 ping 再 connect（更快，但可能漏掉禁 ping 设备）
-              </label>
-
-              <Button size="sm" disabled={busy} onClick={scanIpRange}>
-                开始扫描
-              </Button>
-
-              {scanLastResult && (
-                <div className="mt-2 rounded-lg border p-2">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium">扫描结果</div>
-                    <div className="text-xs text-muted-foreground">
-                      {scanLastResult.startIp}-{scanLastResult.endIp}（{scanLastResult.count}）
-                    </div>
-                  </div>
-
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <select
-                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                      value={scanFilter}
-                      onChange={(e) => setScanFilter(e.target.value)}
-                    >
-                      <option value="all">全部</option>
-                      <option value="ok">成功</option>
-                      <option value="failed">失败</option>
-                      <option value="skipped">跳过(ping失败)</option>
-                    </select>
-                    <Input
-                      className="h-9"
-                      placeholder="搜索 IP/消息"
-                      value={scanKeyword}
-                      onChange={(e) => setScanKeyword(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="mt-2 flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => {
-                        const failed = (scanLastResult?.results || []).filter((x) => !x.ok && !x.skipped)
-                        retryScanRows(failed)
-                      }}
-                    >
-                      重试失败
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => {
-                        const text = JSON.stringify(scanLastResult, null, 2)
-                        navigator.clipboard?.writeText(text).then(
-                          () => pushLog('系统', '复制扫描结果', 'ok'),
-                          () => pushLog('系统', '复制扫描结果', 'failed')
-                        )
-                      }}
-                    >
-                      复制JSON
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => setScanLastResult(null)}
-                    >
-                      关闭
-                    </Button>
-                  </div>
-
-                  <div className="mt-2 max-h-56 overflow-auto rounded-md border">
-                    <div className="grid grid-cols-12 gap-2 text-[11px] font-medium px-2 py-2 border-b">
-                      <div className="col-span-5">目标</div>
-                      <div className="col-span-2">状态</div>
-                      <div className="col-span-5">消息</div>
-                    </div>
-                    <div className="divide-y">
-                      {scanRows.map((r, idx) => (
-                        <div key={idx} className="grid grid-cols-12 gap-2 text-[11px] px-2 py-2">
-                          <div className="col-span-5 font-mono truncate" title={r.target || r.ip}>
-                            {r.target || r.ip}
-                          </div>
-                          <div className="col-span-2">
-                            {r.ok ? (
-                              <span className="text-emerald-700">OK</span>
-                            ) : r.skipped ? (
-                              <span className="text-muted-foreground">SKIP</span>
-                            ) : (
-                              <span className="text-rose-700">FAIL</span>
-                            )}
-                          </div>
-                          <div className="col-span-5 truncate" title={r.message}>
-                            {r.message}
-                          </div>
-                        </div>
-                      ))}
-                      {scanRows.length === 0 && (
-                        <div className="text-xs text-muted-foreground px-2 py-3">无匹配结果</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="mt-2 grid grid-cols-1 gap-2">
@@ -793,15 +778,7 @@ export default function DeviceControlPage() {
                       size="sm"
                       variant="destructive"
                       disabled={busy}
-                      onClick={() => {
-                        setDevices((prev) => prev.filter((x) => x.id !== d.id))
-                        setSelectedIds((prev) => {
-                          const next = new Set(prev)
-                          next.delete(d.id)
-                          return next
-                        })
-                        pushLog(d.name, '移除设备(本地UI)', 'ok')
-                      }}
+                      onClick={() => removeDevice(d)}
                     >
                       移除
                     </Button>

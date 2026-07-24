@@ -57,7 +57,8 @@ export default function OnboardingPage() {
   })
 
   const summaryReady = useMemo(() => {
-    return Boolean(result.usb || result.wifi)
+    const wifiOk = Boolean(result.wifi?.ip || result.wifi?.connectTarget || (result.wifi && !result.wifi.error))
+    return Boolean(result.usb || wifiOk)
   }, [result])
 
   const refreshDevices = async () => {
@@ -179,8 +180,11 @@ export default function OnboardingPage() {
 
       // 若后端已探测到 connectTarget，则回填端口
       if (r?.connectTarget && String(r.connectTarget).includes(':')) {
-        const p2 = String(r.connectTarget).split(':')[1]
+        const [ip2, p2] = String(r.connectTarget).split(':')
+        if (ip2) setManualWifiIp(ip2)
         if (p2) setManualWifiPort(String(p2))
+        if (ip2) setWifiIp(ip2)
+        if (p2) setWifiPort(String(p2))
       }
     } catch (e) {
       setResult((prev) => ({
@@ -458,6 +462,21 @@ export default function OnboardingPage() {
                         {busy ? '配对中…' : '配对并连接'}
                       </Button>
 
+                      {result?.wifi?.mode === 'pair' && result?.wifi?.connectTarget && (
+                        <div className="text-xs text-emerald-700 whitespace-pre-wrap">
+                          已连接：{result.wifi.connectTarget}
+                          {result.wifi.connect ? `\n${result.wifi.connect}` : ''}
+                        </div>
+                      )}
+
+                      {result?.wifi?.mode === 'pair' && Array.isArray(result?.wifi?.warnings) && result.wifi.warnings.length > 0 && (
+                        <div className="text-xs text-amber-700 whitespace-pre-wrap space-y-1">
+                          {result.wifi.warnings.map((w) => (
+                            <div key={w}>{w}</div>
+                          ))}
+                        </div>
+                      )}
+
                       {result?.wifi?.mode === 'pair' && result?.wifi?.error && (
                         <div className="text-xs text-red-500 whitespace-pre-wrap">{result.wifi.error}</div>
                       )}
@@ -582,7 +601,7 @@ export default function OnboardingPage() {
                 <div className="text-lg font-semibold">🎉 设备接入完成！</div>
                 <div className="rounded-lg border p-3 text-sm">
                   <div>✔ USB：{result.usb ? 'OK' : '待完成'}</div>
-                  <div>✔ WiFi：{result.wifi?.ip ? 'OK' : '待完成'}</div>
+                  <div>✔ WiFi：{result.wifi?.ip || result.wifi?.connectTarget ? 'OK' : '待完成'}</div>
                   <div>✔ 自动化环境：{result.atx?.ok ? 'OK' : '待完成'}</div>
                 </div>
 

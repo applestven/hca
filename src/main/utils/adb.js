@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import { join } from 'path'
 import fs from 'fs'
+import net from 'net'
 
 function getScrcpyDir() {
   // dev：bin/scrcpy 在项目根目录
@@ -14,11 +15,11 @@ function getScrcpyDir() {
   return devDir
 }
 
-function getAdbPath() {
+export function getAdbPath() {
   return join(getScrcpyDir(), process.platform === 'win32' ? 'adb.exe' : 'adb')
 }
 
-function runAdb(args, { timeoutMs = 15000 } = {}) {
+export function runAdb(args, { timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const adbPath = getAdbPath()
 
@@ -38,7 +39,10 @@ function runAdb(args, { timeoutMs = 15000 } = {}) {
       try {
         child.kill('SIGKILL')
       } catch {}
-      reject(new Error(`adb timeout after ${timeoutMs}ms: ${args.join(' ')}`))
+      const err = new Error(`adb timeout after ${timeoutMs}ms: ${args.join(' ')}`)
+      err.stdout = stdout
+      err.stderr = stderr
+      reject(err)
     }, timeoutMs)
 
     child.stdout.on('data', (d) => (stdout += d.toString()))
@@ -46,6 +50,8 @@ function runAdb(args, { timeoutMs = 15000 } = {}) {
 
     child.on('error', (e) => {
       clearTimeout(timer)
+      e.stdout = stdout
+      e.stderr = stderr
       reject(e)
     })
 
@@ -54,16 +60,45 @@ function runAdb(args, { timeoutMs = 15000 } = {}) {
       if (code === 0) {
         resolve({ stdout, stderr })
       } else {
-        reject(new Error((stderr || stdout || '').trim() || `adb exited with code ${code}`))
+        const msg = (stderr || stdout || '').trim() || `adb exited with code ${code}`
+        const err = new Error(msg)
+        err.code = code
+        err.stdout = stdout
+        err.stderr = stderr
+        reject(err)
       }
     })
   })
 }
 
+/** adb connect 即使失败也常返回 exit 0，必须看 stdout */
+export function isAdbConnectOk(out) {
+  return /connected to|already connected to/i.test(String(out || ''))
+}
+
+function normalizeConnectOutput(stdout, stderr) {
+  return String(stdout || stderr || '').trim()
+}
+
 export async function adbConnect(ip, port = 5555) {
-  const target = `${ip}:${port}`
-  const { stdout } = await runAdb(['connect', target])
-  return stdout.trim()
+  const target = `${String(ip).trim()}:${Number(port) || 5555}`
+  const { stdout, stderr } = await runAdb(['connect', target], { timeoutMs: 3000 })
+  const out = normalizeConnectOutput(stdout, stderr)
+  if (!isAdbConnectOk(out)) {
+    throw new Error(out || `failed to connect to ${target}`)
+  }
+  return out
+}
+
+export async function adbConnectTarget(target) {
+  const t = String(target || '').trim()
+  if (!t.includes(':')) throw new Error(`invalid wifi target: ${t}`)
+  const { stdout, stderr } = await runAdb(['connect', t], { timeoutMs: 3000 })
+  const out = normalizeConnectOutput(stdout, stderr)
+  if (!isAdbConnectOk(out)) {
+    throw new Error(out || `failed to connect to ${t}`)
+  }
+  return out
 }
 
 export async function adbDisconnectTarget(target) {
@@ -191,13 +226,10 @@ export async function adbReconnectSmart(serial) {
   // WiFi: serial 是 ip:port
   if (s.includes(':')) {
     await adbDisconnectTarget(s).catch(() => {})
-    const { stdout } = await runAdb(['connect', s])
-    return stdout.trim()
+    return await adbConnectTarget(s)
   }
 
-  // USB / emulator：使用 adb reconnect（不会影响其他设备）
-  // 说明：adb reconnect 只能传 device/offline，不区分 serial；这里退化为“重启 server + 刷新”
-  // 更实用：直接 kill/start server
+  // USB / emulator：按 serial 做 reconnect（adb reconnect 不支持 -s，退化为重启 server）
   await adbKillServer().catch(() => {})
   const out = await adbStartServer().catch(() => '')
   return out || 'adb restarted'
@@ -234,71 +266,29 @@ export async function adbStartApp(serial, pkg, activity) {
   return stdout.trim()
 }
 
-function ipv4ToInt(ip) {
-  const parts = String(ip).trim().split('.')
-  if (parts.length !== 4) throw new Error(`invalid ip: ${ip}`)
-  const n = parts.map((p) => Number(p))
-  if (n.some((x) => Number.isNaN(x) || x < 0 || x > 255)) throw new Error(`invalid ip: ${ip}`)
-  return ((n[0] << 24) >>> 0) + (n[1] << 16) + (n[2] << 8) + n[3]
-}
-
-function intToIpv4(v) {
-  const n = v >>> 0
-  return [
-    (n >>> 24) & 255,
-    (n >>> 16) & 255,
-    (n >>> 8) & 255,
-    n & 255
-  ].join('.')
-}
-
-function parseCidrOrRange(rangeText) {
-  const text = String(rangeText || '').trim()
-  if (!text) throw new Error('range is required')
-
-  // 支持：
-  // - 192.168.110.x（等价 192.168.110.1-254）
-  // - 192.168.110.1-255
-  // - 192.168.110.10-192.168.110.200
-  // - 192.168.110.0/24
-
-  if (text.endsWith('.x')) {
-    const base = text.slice(0, -2)
-    const start = `${base}.1`
-    const end = `${base}.254`
-    return { startIp: start, endIp: end }
-  }
-
-  if (text.includes('/')) {
-    const [ip, maskStr] = text.split('/')
-    const mask = Number(maskStr)
-    if (Number.isNaN(mask) || mask < 0 || mask > 32) throw new Error(`invalid cidr mask: ${maskStr}`)
-    const ipInt = ipv4ToInt(ip)
-    const maskInt = mask === 0 ? 0 : ((~0 << (32 - mask)) >>> 0)
-    const net = ipInt & maskInt
-    const broadcast = (net | (~maskInt >>> 0)) >>> 0
-    const start = net + 1
-    const end = broadcast - 1
-    return { startIp: intToIpv4(start), endIp: intToIpv4(end) }
-  }
-
-  if (text.includes('-')) {
-    const [a, b] = text.split('-').map((s) => s.trim())
-    if (!a || !b) throw new Error(`invalid range: ${text}`)
-
-    // 192.168.110.1-255
-    if (/^\d{1,3}$/.test(b)) {
-      const parts = a.split('.')
-      if (parts.length !== 4) throw new Error(`invalid start ip: ${a}`)
-      const endIp = `${parts[0]}.${parts[1]}.${parts[2]}.${b}`
-      return { startIp: a, endIp }
+export async function tcpProbe(ip, port, timeoutMs = 400) {
+  return await new Promise((resolve) => {
+    const socket = new net.Socket()
+    let done = false
+    const finish = (ok) => {
+      if (done) return
+      done = true
+      try {
+        socket.destroy()
+      } catch {}
+      resolve(ok)
     }
 
-    return { startIp: a, endIp: b }
-  }
-
-  // 单个 IP：只扫描一个
-  return { startIp: text, endIp: text }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+    try {
+      socket.connect(Number(port), String(ip))
+    } catch {
+      finish(false)
+    }
+  })
 }
 
 async function pingOnce(ip, timeoutMs = 300) {
@@ -329,91 +319,89 @@ async function mapLimit(items, limit, mapper) {
   return results
 }
 
-// 扫描一组 IP（可选 ping），并按需执行 perIpHandler（比如尝试 adb connect）
-async function scanIpList(
-  ips,
-  { port = 5555, concurrency = 50, pingFirst = true } = {},
-  perIpHandler
-) {
-  const list = Array.from(new Set((ips || []).map((x) => String(x).trim()).filter(Boolean)))
-
-  const ordered = await mapLimit(list, concurrency, async (ip) => {
-    const target = `${ip}:${port}`
-
-    if (pingFirst) {
-      const ok = await pingOnce(ip, 300)
-      if (!ok) {
-        return { ip, port, target, ok: false, skipped: true, message: 'ping failed' }
-      }
-    }
-
-    if (typeof perIpHandler === 'function') {
-      const r = await perIpHandler(ip)
-      return { ip, port, target, ...(r || {}) }
-    }
-
-    return { ip, port, target, ok: true }
-  })
-
-  // mapLimit 保序返回；这里直接输出数组即可
-  return ordered
-}
-
-export async function adbConnectMany(ips, { port = 5555, concurrency = 20, pingFirst = true } = {}) {
-  const list = Array.from(new Set((ips || []).map((x) => String(x).trim()).filter(Boolean)))
+export async function adbConnectMany(targetsOrIps, { port = 5555, concurrency = 20, pingFirst = false, tcpProbeFirst = false } = {}) {
+  const list = Array.from(new Set((targetsOrIps || []).map((x) => String(x).trim()).filter(Boolean)))
   const results = []
 
-  await mapLimit(list, concurrency, async (ip) => {
-    const target = `${ip}:${port}`
+  await mapLimit(list, concurrency, async (item) => {
+    const hasPort = item.includes(':')
+    const ip = hasPort ? item.split(':')[0] : item
+    const p = hasPort ? Number(item.split(':')[1]) || port : port
+    const target = `${ip}:${p}`
+
     try {
-      if (pingFirst) {
+      if (tcpProbeFirst) {
+        const open = await tcpProbe(ip, p, 350)
+        if (!open) {
+          results.push({ ip, port: p, target, ok: false, skipped: true, message: 'tcp closed' })
+          return
+        }
+      } else if (pingFirst) {
         const ok = await pingOnce(ip, 300)
         if (!ok) {
-          results.push({ ip, port, target, ok: false, skipped: true, message: 'ping failed' })
+          results.push({ ip, port: p, target, ok: false, skipped: true, message: 'ping failed' })
           return
         }
       }
 
-      const out = await adbConnect(ip, port)
-      results.push({ ip, port, target, ok: true, message: out })
+      const out = await adbConnect(ip, p)
+      results.push({ ip, port: p, target, ok: true, message: out })
     } catch (e) {
-      results.push({ ip, port, target, ok: false, message: e?.message || String(e) })
+      results.push({ ip, port: p, target, ok: false, message: e?.message || String(e) })
     }
   })
 
   return results
 }
 
-export async function adbScanIpRange(rangeText, { port = 5555, concurrency = 50, pingFirst = true } = {}) {
-  const { startIp, endIp } = parseCidrOrRange(rangeText)
-  const a = ipv4ToInt(startIp)
-  const b = ipv4ToInt(endIp)
-  const start = Math.min(a, b)
-  const end = Math.max(a, b)
+/**
+ * 自动重连一组 WiFi 目标（ip:port），带并发限制。
+ * @param {string[]} targets
+ */
+export async function adbAutoConnectTargets(targets, { concurrency = 4 } = {}) {
+  const list = Array.from(new Set((targets || []).map((x) => String(x).trim()).filter((x) => x.includes(':'))))
+  return await adbConnectMany(list, { concurrency, pingFirst: false, tcpProbeFirst: true })
+}
 
-  const ips = []
-  for (let i = start; i <= end; i++) {
-    ips.push(intToIpv4(i))
-    // 简单保护：避免误填 /16 一下扫爆
-    if (ips.length > 4096) break
-  }
+/**
+ * 通过 adb mdns 发现 Android 11+ 无线调试的 connect 端口。
+ * @returns {Promise<Array<{ip:string,port:number,target:string,service:string}>>}
+ */
+export async function adbMdnsDiscoverConnectServices() {
+  try {
+    const { stdout } = await runAdb(['mdns', 'services'], { timeoutMs: 8000 })
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
 
-  const results = await scanIpList(
-    ips,
-    {
-      port,
-      concurrency,
-      pingFirst
-    },
-    async (ip, _idx) => {
-      try {
-        const out = await adbConnect(ip, port)
-        return { ok: true, message: out }
-      } catch (e) {
-        return { ok: false, message: e?.message || String(e) }
-      }
+    const found = []
+    for (const line of lines) {
+      // 常见形态：
+      // adb-XXXXX _adb-tls-connect._tcp. 192.168.1.10:37123
+      // 或带其它空白分隔
+      if (!/_adb-tls-connect\._tcp/i.test(line) && !/_adb\._tcp/i.test(line)) continue
+      const m = line.match(/(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})/)
+      if (!m) continue
+      const ip = m[1]
+      const port = Number(m[2])
+      if (!ip || !port) continue
+      found.push({
+        ip,
+        port,
+        target: `${ip}:${port}`,
+        service: /_adb-tls-connect/i.test(line) ? 'tls-connect' : 'adb'
+      })
     }
-  )
 
-  return results
+    // 去重
+    const seen = new Set()
+    return found.filter((x) => {
+      if (seen.has(x.target)) return false
+      seen.add(x.target)
+      return true
+    })
+  } catch {
+    return []
+  }
 }
