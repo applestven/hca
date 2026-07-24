@@ -33,7 +33,7 @@ import {
 } from './utils/onboarding'
 
 import { listScripts, startScript, stopScript, stopScriptGroup, checkPythonRuntime } from './utils/scriptRunner'
-import { getOrCreateMachineId, createApiClient, featureIsValid } from './utils/permission'
+import { getOrCreateMachineId, createApiClient, canUseScript } from './utils/permission'
 
 // 更新模式：ui（手动） | force（强制）
 // 优先走更新服务器策略（policy.json），拉取失败再回退到环境变量
@@ -610,19 +610,33 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('scripts:start', async (_e, { key, params, deviceSerials } = {}) => {
     // 在开始执行脚本前校验权限：按“脚本 key”校验（例如 soul 的 manifest.json key= soul）
+    // 规则：接口 features 有对应 key → 按接口权限校验；接口无此 key / 本地匹配不上 → 永久可用
     if (!key) throw new Error('key is required')
 
     const machineId = permissionStore.get('machineId') || getOrCreateMachineId()
     permissionStore.set('machineId', machineId)
 
-    const permission = permissionStore.get('permission') || (await refreshPermission())
-    const f = permission?.data?.features?.[key]
-    if (!featureIsValid(f)) {
+    const localKeys = listScripts().map((s) => s.key).filter(Boolean)
+    if (!localKeys.includes(key)) {
+      throw new Error('script not found')
+    }
+
+    let permission = permissionStore.get('permission')
+    try {
+      if (!permission) permission = await refreshPermission()
+    } catch {
+      // 接口不可用时：本地脚本按「无对应关键字」处理 → 永久可用
+      permission = permission || { data: { features: {} } }
+    }
+
+    const features = permission?.data?.features
+    const { ok, feature, fromLocalDefault } = canUseScript(features, key, localKeys)
+    if (!ok) {
       throw new Error('您没有权限使用该脚本，或权限已过期/次数不足。请前往“版本”页面激活后再试。')
     }
 
-    // 次数型：在启动前做一次扣减（服务端原子扣减）
-    if (f?.type === 'count') {
+    // 次数型：在启动前做一次扣减（服务端原子扣减）；本地默认永久权限不扣减
+    if (!fromLocalDefault && feature?.type === 'count') {
       await permissionApi.updateFeatureCount(machineId, key)
       // 扣减后刷新缓存，保证 UI 展示一致
       await refreshPermission().catch(() => {})

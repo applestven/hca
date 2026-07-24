@@ -12,13 +12,19 @@
       "key": "soul",
       "name": "Soul自动私聊",
       "scope": "脚本",
-      "desc": "示例脚本，按脚本 key 授权"
+      "desc": "按脚本 key 授权；接口无此 key 时本地永久可用"
     },
     {
-      "key": "demo_auto_chat",
-      "name": "打开微信",
+      "key": "soul_match_greet",
+      "name": "Soul循环匹配打招呼",
       "scope": "脚本",
-      "desc": "示例脚本，按脚本 key 授权"
+      "desc": "循环匹配打招呼；接口无此 key 时本地永久可用"
+    },
+    {
+      "key": "temp",
+      "name": "打开微信(示例)",
+      "scope": "脚本",
+      "desc": "示例脚本，按脚本 key 授权；接口无此 key 时本地永久可用"
     }
   ]
 }

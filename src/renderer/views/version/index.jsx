@@ -27,18 +27,26 @@ function showCnAlert(message) {
 }
 
 function formatPermissionValue(p) {
-  if (!p || typeof p !== 'object') return '无'
-  if (p.type === 'lifetime') return '永久'
+  if (!p || typeof p !== 'object') return '永久'
+  if (p.type === 'lifetime') return p.source === 'local' ? '永久（本地）' : '永久'
   if (p.type === 'monthly' || p.type === 'yearly') return p.expireDate ? `有效期至 ${p.expireDate}` : '订阅'
   if (p.type === 'count') return `剩余 ${Number(p.remaining ?? 0)} 次`
-  return '无'
+  return '永久'
 }
 
 function getFeatureByKey(permission, key) {
   if (!key) return null
   const features = permission?.data?.features
-  if (!features || typeof features !== 'object') return null
-  return features[key] || null
+  if (!features || typeof features !== 'object') {
+    // 接口无 features → 本地脚本视为永久
+    return { type: 'lifetime', source: 'local' }
+  }
+  const f = features[key]
+  if (!f || typeof f !== 'object') {
+    // 接口关键字本地匹配不上 / 没有 → 永久
+    return { type: 'lifetime', source: 'local' }
+  }
+  return f
 }
 
 export default function VersionPage() {
@@ -237,7 +245,7 @@ export default function VersionPage() {
               <DialogHeader>
                 <DialogTitle>权限列表</DialogTitle>
                 <DialogDescription>
-                  以本地白名单为主展示，按权限Key匹配接口返回的状态；未匹配显示“无”。
+                  以本地白名单为主展示：接口有对应 key 则显示接口状态；接口无 key / 匹配不上则显示「永久（本地）」。
                   {permRefreshing ? '（刷新中…）' : ''}
                 </DialogDescription>
               </DialogHeader>

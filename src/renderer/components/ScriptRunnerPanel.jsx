@@ -34,14 +34,19 @@ function showFriendlyError(message) {
 
 function ParamField({ p, value, onChange }) {
   const type = p?.type || 'text'
+  const required = !!p?.required
   return (
     <div className="space-y-1">
-      <Label>{p?.label || p?.key}</Label>
+      <Label>
+        {p?.label || p?.key}
+        {required ? <span className="text-rose-600"> *</span> : null}
+      </Label>
       <Input
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={String(p?.default ?? '')}
+        placeholder={String(p?.placeholder ?? p?.default ?? '')}
         inputMode={type === 'number' ? 'numeric' : undefined}
+        required={required}
       />
     </div>
   )
@@ -97,6 +102,22 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
       showFriendlyError('请先选择至少 1 台设备')
       return
     }
+
+    // 校验必填参数
+    for (const p of selected?.params || []) {
+      if (!p?.required) continue
+      const v = params?.[p.key]
+      if (v === undefined || v === null || String(v).trim() === '') {
+        const label = p.label || p.key
+        showFriendlyError(`请填写必填参数：${label}`)
+        return
+      }
+      if (p.type === 'number' && !(Number(v) >= 1)) {
+        showFriendlyError(`${p.label || p.key} 必须为大于等于 1 的数字`)
+        return
+      }
+    }
+
     setBusy(true)
     try {
       const r = await window.api?.scripts?.start?.({ key: selectedKey, params, deviceSerials })

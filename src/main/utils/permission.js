@@ -202,3 +202,47 @@ export function featureIsValid(f) {
   }
   return false
 }
+
+/** 本地脚本默认永久权限（接口无对应 key / 无法匹配时使用） */
+export const LOCAL_LIFETIME_FEATURE = Object.freeze({ type: 'lifetime', source: 'local' })
+
+/**
+ * 解析本地脚本权限：
+ * - 接口 features 中有该 key → 使用接口权限
+ * - 接口没有该 key，或本地脚本列表无法匹配到该 key → 永久可用
+ *
+ * @param {object|null|undefined} features 接口返回的 features 对象
+ * @param {string} key 本地脚本 manifest.key
+ * @param {string[]|Set<string>|null} localKeys 本地脚本 key 集合；传入时用于判断「本地匹配不上」
+ */
+export function resolveScriptFeature(features, key, localKeys = null) {
+  const k = String(key || '').trim()
+  if (!k) return null
+
+  if (localKeys) {
+    const set = localKeys instanceof Set ? localKeys : new Set(localKeys)
+    if (!set.has(k)) {
+      // 本地不存在该脚本：无权限对象可校验（启动路径不应走到这里）
+      return null
+    }
+  }
+
+  const f = features && typeof features === 'object' ? features[k] : null
+  if (!f || typeof f !== 'object') {
+    // 接口没有该功能关键字 → 本地脚本永久可用
+    return { ...LOCAL_LIFETIME_FEATURE }
+  }
+  return f
+}
+
+/**
+ * 判断脚本是否可启动。
+ * @returns {{ ok: boolean, feature: object|null, fromLocalDefault: boolean }}
+ */
+export function canUseScript(features, key, localKeys = null) {
+  const feature = resolveScriptFeature(features, key, localKeys)
+  if (!feature) return { ok: false, feature: null, fromLocalDefault: false }
+  const fromLocalDefault = feature?.source === 'local'
+  if (fromLocalDefault) return { ok: true, feature, fromLocalDefault: true }
+  return { ok: featureIsValid(feature), feature, fromLocalDefault: false }
+}
