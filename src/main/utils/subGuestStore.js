@@ -81,6 +81,14 @@ function runExclusive(fn) {
 
 function rowToUser(row) {
   if (!row) return null
+  let lastSendContent = null
+  if (row.last_send_content) {
+    try {
+      lastSendContent = JSON.parse(row.last_send_content)
+    } catch {
+      lastSendContent = [String(row.last_send_content)]
+    }
+  }
   return {
     userId: row.user_id,
     displayName: row.display_name || '',
@@ -91,6 +99,7 @@ function rowToUser(row) {
     status: row.status || 'pending',
     waitingReply: Boolean(row.waiting_reply),
     lastSendMessageId: row.last_send_message_id || null,
+    lastSendContent,
     lastSendAt: row.last_send_at || null,
     lastReplyMessageId: row.last_reply_message_id || null,
     lastReplyAt: row.last_reply_at || null,
@@ -114,6 +123,7 @@ function ensureSchema() {
       status TEXT NOT NULL,
       waiting_reply INTEGER NOT NULL DEFAULT 0,
       last_send_message_id TEXT,
+      last_send_content TEXT,
       last_send_at TEXT,
       last_reply_message_id TEXT,
       last_reply_at TEXT,
@@ -124,6 +134,15 @@ function ensureSchema() {
       updated_at TEXT NOT NULL
     );
   `)
+  // 兼容旧库：补 last_send_content
+  try {
+    const cols = queryAll('PRAGMA table_info(users)')
+    if (!cols.some((c) => c.name === 'last_send_content')) {
+      db.run('ALTER TABLE users ADD COLUMN last_send_content TEXT')
+    }
+  } catch {
+    // ignore
+  }
   db.run(`CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_users_locked ON users(locked_by);`)
 }
@@ -138,13 +157,13 @@ function defaultScriptsPayload() {
         name: '默认话术',
         variables: ['name'],
         steps: [
-          { order: 1, messages: ['哈哈', '晚上好'], delay: { min: 2, max: 5 } },
+          { order: 1, messages: ['哈哈', '你好'], delay: { min: 0.8, max: 1.5 } },
           {
             order: 2,
             messages: ['你经常玩这个吗', '好怕被人发现啊'],
-            delay: { min: 2, max: 5 }
+            delay: { min: 0.8, max: 1.5 }
           },
-          { order: 3, messages: ['哈哈哈'], delay: { min: 1, max: 3 } }
+          { order: 3, messages: ['哈哈哈'], delay: { min: 0.5, max: 1.2 } }
         ]
       }
     ]
@@ -173,6 +192,50 @@ function loadDefaultScriptsFromPackage() {
   return defaultScriptsPayload()
 }
 
+/**
+ * 仅在「没有任何话术」时生成并落盘一条默认话术。
+ * 已有话术（含用户改过的默认话术）一律原样读写，不覆盖。
+ */
+function ensureScriptsFile() {
+  if (!scriptsPath) {
+    rootDir = getRootDir()
+    scriptsPath = join(rootDir, 'scripts.json')
+    fs.mkdirSync(rootDir, { recursive: true })
+  }
+
+  const seedAndWrite = () => {
+    const payload = loadDefaultScriptsFromPackage()
+    const out = {
+      version: payload.version || 1,
+      selectedIds: Array.isArray(payload.selectedIds) ? payload.selectedIds : ['default'],
+      scripts: Array.isArray(payload.scripts) && payload.scripts.length ? payload.scripts : defaultScriptsPayload().scripts
+    }
+    if (!out.selectedIds.length && out.scripts[0]?.id) {
+      out.selectedIds = [out.scripts[0].id]
+    }
+    fs.writeFileSync(scriptsPath, JSON.stringify(out, null, 2), 'utf-8')
+    return out
+  }
+
+  if (!fs.existsSync(scriptsPath)) {
+    return seedAndWrite()
+  }
+
+  try {
+    const pack = JSON.parse(fs.readFileSync(scriptsPath, 'utf-8'))
+    const scripts = Array.isArray(pack?.scripts) ? pack.scripts : []
+    if (!scripts.length) {
+      return seedAndWrite()
+    }
+    if (!Array.isArray(pack.selectedIds)) {
+      pack.selectedIds = scripts.some((s) => s.id === 'default') ? ['default'] : []
+    }
+    return pack
+  } catch {
+    return seedAndWrite()
+  }
+}
+
 export async function initSubGuestStore() {
   rootDir = getRootDir()
   scriptsPath = join(rootDir, 'scripts.json')
@@ -180,10 +243,7 @@ export async function initSubGuestStore() {
   logsDir = join(rootDir, 'logs')
   fs.mkdirSync(logsDir, { recursive: true })
 
-  if (!fs.existsSync(scriptsPath)) {
-    const payload = loadDefaultScriptsFromPackage()
-    fs.writeFileSync(scriptsPath, JSON.stringify(payload, null, 2), 'utf-8')
-  }
+  ensureScriptsFile()
 
   const initSqlJs = require('sql.js')
   const wasmPath = locateWasm()
@@ -208,17 +268,7 @@ export function getSubGuestPaths() {
 }
 
 export function listScripts() {
-  try {
-    const raw = fs.readFileSync(scriptsPath, 'utf-8')
-    const pack = JSON.parse(raw)
-    if (!Array.isArray(pack.selectedIds)) {
-      // 旧文件无 selectedIds：若有 default 则默认勾选，否则空（启动时会提示）
-      pack.selectedIds = (pack.scripts || []).some((s) => s.id === 'default') ? ['default'] : []
-    }
-    return pack
-  } catch {
-    return defaultScriptsPayload()
-  }
+  return ensureScriptsFile()
 }
 
 export function getSelectedScriptIds() {
@@ -236,17 +286,34 @@ export function setSelectedScriptIds(ids = []) {
 }
 
 export function saveScripts(payload) {
-  const next = payload && typeof payload === 'object' ? payload : defaultScriptsPayload()
-  if (!Array.isArray(next.scripts)) throw new Error('scripts must be an array')
+  const next = payload && typeof payload === 'object' ? payload : null
+  if (!next || !Array.isArray(next.scripts)) throw new Error('scripts must be an array')
   if (next.scripts.length > 100) throw new Error('最多 100 个话术')
   for (const s of next.scripts) {
     if (!s?.id) throw new Error('话术缺少 id')
     if ((s.steps || []).length > 10) throw new Error(`话术 ${s.id} 句本超过 10`)
+    // 规范化间隔 0.1–10（默认话术也可改）
+    for (const st of s.steps || []) {
+      if (!st.delay) st.delay = { min: 0.8, max: 1.5 }
+      const minRaw = Number(st.delay.min)
+      const maxRaw = Number(st.delay.max)
+      const min = Number.isFinite(minRaw) ? Math.min(10, Math.max(0.1, minRaw)) : 0.8
+      const max = Number.isFinite(maxRaw) ? Math.min(10, Math.max(0.1, maxRaw)) : Math.max(min, 1.5)
+      st.delay = { min, max: Math.max(max, min) }
+    }
   }
+
+  // 允许保存空列表；下次 listScripts/ensureScriptsFile 会再生成默认话术
+  if (!scriptsPath) {
+    rootDir = getRootDir()
+    scriptsPath = join(rootDir, 'scripts.json')
+    fs.mkdirSync(rootDir, { recursive: true })
+  }
+
   const valid = new Set(next.scripts.map((s) => s.id))
   const selectedIds = Array.isArray(next.selectedIds)
     ? next.selectedIds.map(String).filter((id) => valid.has(id))
-    : getSelectedScriptIds().filter((id) => valid.has(id))
+    : []
 
   const out = {
     version: next.version || 1,
@@ -300,6 +367,13 @@ function upsertUserSync(user) {
   if (!userId) throw new Error('userId is required')
 
   const prev = getUser(userId)
+  let lastSendContent = user.lastSendContent !== undefined ? user.lastSendContent : prev?.lastSendContent ?? null
+  if (Array.isArray(lastSendContent)) {
+    lastSendContent = lastSendContent.map((x) => String(x ?? ''))
+  } else if (lastSendContent != null && typeof lastSendContent !== 'string') {
+    lastSendContent = [String(lastSendContent)]
+  }
+
   const next = {
     userId,
     displayName: user.displayName ?? prev?.displayName ?? '',
@@ -310,6 +384,7 @@ function upsertUserSync(user) {
     status: user.status ?? prev?.status ?? 'pending',
     waitingReply: user.waitingReply ?? prev?.waitingReply ?? false,
     lastSendMessageId: user.lastSendMessageId ?? prev?.lastSendMessageId ?? null,
+    lastSendContent,
     lastSendAt: user.lastSendAt ?? prev?.lastSendAt ?? null,
     lastReplyMessageId: user.lastReplyMessageId ?? prev?.lastReplyMessageId ?? null,
     lastReplyAt: user.lastReplyAt ?? prev?.lastReplyAt ?? null,
@@ -320,13 +395,19 @@ function upsertUserSync(user) {
     updatedAt: nowStr()
   }
 
+  const contentStr = Array.isArray(next.lastSendContent)
+    ? JSON.stringify(next.lastSendContent)
+    : next.lastSendContent
+      ? JSON.stringify([String(next.lastSendContent)])
+      : null
+
   db.run(
     `INSERT OR REPLACE INTO users (
       user_id, display_name, script_id, script_name,
       completed_step, next_step, status, waiting_reply,
-      last_send_message_id, last_send_at, last_reply_message_id, last_reply_at,
+      last_send_message_id, last_send_content, last_send_at, last_reply_message_id, last_reply_at,
       retry_count, last_fail_reason, locked_by, lock_expire_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       next.userId,
       next.displayName,
@@ -337,6 +418,7 @@ function upsertUserSync(user) {
       next.status,
       next.waitingReply ? 1 : 0,
       next.lastSendMessageId,
+      contentStr,
       next.lastSendAt,
       next.lastReplyMessageId,
       next.lastReplyAt,
@@ -462,6 +544,7 @@ export function markSendSuccess(userId, { lastSendMessageId, content, maxSteps, 
       status,
       waitingReply,
       lastSendMessageId: lastSendMessageId || u.lastSendMessageId,
+      lastSendContent: Array.isArray(content) ? content : u.lastSendContent,
       lastSendAt: nowStr(),
       retryCount: 0,
       lastFailReason: null

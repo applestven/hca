@@ -155,7 +155,7 @@ export default function OnboardingPage() {
           ip,
           port,
           error: e?.message || String(e),
-          tips: ['请确认手机无线调试已开启', '确认端口是否为手机“IP 地址和端口”中的端口（可能不是配对端口）', '检查防火墙是否拦截 ADB 端口']
+          tips: ['请确认手机无线调试已开启', '确认 IP/端口正确', '检查防火墙是否拦截 ADB 端口']
         }
       }))
     } finally {
@@ -172,19 +172,19 @@ export default function OnboardingPage() {
 
     setBusy(true)
     try {
-      const r = await window.api?.onboarding?.pairAndConnect?.(ip, port, code)
+      // 只填一个端口：配对与连接共用
+      const r = await window.api?.onboarding?.pairAndConnect?.(ip, port, code, port)
       setResult((prev) => ({ ...prev, wifi: { mode: 'pair', ...r } }))
 
-      // 方便用户后续手动 connect 到“IP 地址和端口”
       if (ip) setManualWifiIp(ip)
 
-      // 若后端已探测到 connectTarget，则回填端口
       if (r?.connectTarget && String(r.connectTarget).includes(':')) {
         const [ip2, p2] = String(r.connectTarget).split(':')
         if (ip2) setManualWifiIp(ip2)
         if (p2) setManualWifiPort(String(p2))
         if (ip2) setWifiIp(ip2)
         if (p2) setWifiPort(String(p2))
+        if (p2) setPairPort(String(p2))
       }
     } catch (e) {
       setResult((prev) => ({
@@ -192,7 +192,7 @@ export default function OnboardingPage() {
         wifi: {
           mode: 'pair',
           error: e?.message || String(e),
-          tips: ['请确认“无线调试”页显示的 IP:端口 与配对码未过期', '部分手机配对端口与连接端口不同：配对成功后仍需在手机页查看“IP 地址和端口”并 connect']
+          tips: ['请确认无线调试已开启', '端口与配对码来自同一弹窗/界面', '端口变更后需重新填写']
         }
       }))
     } finally {
@@ -440,7 +440,7 @@ export default function OnboardingPage() {
                     <CardHeader>
                       <CardTitle className="text-base">方案 2（Android 11+）无线调试配对</CardTitle>
                       <CardDescription>
-                        在手机：设置 → 开发者选项 → 无线调试 → 使用配对码配对设备
+                        只需填一个端口：有配对码时用该端口完成配对并连接
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -451,7 +451,7 @@ export default function OnboardingPage() {
                         </div>
                         <div className="space-y-1">
                           <Label>端口</Label>
-                          <Input value={pairPort} onChange={(e) => setPairPort(e.target.value)} placeholder="37123" />
+                          <Input value={pairPort} onChange={(e) => setPairPort(e.target.value)} placeholder="配对/连接共用" />
                         </div>
                         <div className="space-y-1">
                           <Label>配对码</Label>

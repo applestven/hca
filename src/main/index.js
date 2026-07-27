@@ -29,7 +29,10 @@ import {
   pairAndConnect,
   atxCheck,
   atxInstall,
-  permissionCheck
+  atxForceInstall,
+  ensureAtx,
+  permissionCheck,
+  ATX_DOWNLOAD_URLS
 } from './utils/onboarding'
 
 import { listScripts, startScript, stopScript, stopScriptGroup, checkPythonRuntime } from './utils/scriptRunner'
@@ -66,14 +69,15 @@ const deviceStore = new Store({
     knownWifi: [], // [{ target, ip, port, lastConnectedAt }]
     autoReconnect: true,
     // 设备中控「添加 WiFi」表单上次填写内容
-    wifiForm: { ip: '', port: '5555', pairCode: '' }
+    wifiForm: { ip: '', port: '5555', pairPort: '', pairCode: '' }
   }
 })
 
-function saveWifiForm({ ip, port, pairCode } = {}) {
+function saveWifiForm({ ip, port, pairPort, pairCode } = {}) {
   deviceStore.set('wifiForm', {
     ip: String(ip || '').trim(),
     port: String(port ?? '5555').trim() || '5555',
+    pairPort: String(pairPort ?? '').trim(),
     pairCode: String(pairCode || '').trim()
   })
 }
@@ -83,6 +87,7 @@ function getWifiForm() {
   return {
     ip: String(form.ip || ''),
     port: String(form.port || '5555'),
+    pairPort: String(form.pairPort || ''),
     pairCode: String(form.pairCode || '')
   }
 }
@@ -125,7 +130,14 @@ async function autoConnectKnownWifi({ concurrency = 4 } = {}) {
 
   const results = await adbAutoConnectTargets(targets, { concurrency })
   for (const r of results) {
-    if (r?.ok && r?.target) rememberWifiFromTarget(r.target)
+    if (r?.ok && r?.target) {
+      rememberWifiFromTarget(r.target)
+      // 自动重连成功后也确保 ATX（有缓存，不会每次重装）
+      r.atx = await ensureAtx(r.target).catch((e) => ({
+        ok: false,
+        error: e?.message || String(e)
+      }))
+    }
   }
   return { skipped: false, results }
 }
@@ -388,44 +400,98 @@ app.whenReady().then(async () => {
   ipcMain.handle('device:connect-wifi', async (_e, { ip, port } = {}) => {
     if (!ip) throw new Error('ip is required')
     const p = port ?? 5555
-    // 输入即落本地，便于自动重连
-    rememberWifiTarget(ip, p)
     const out = await adbConnect(ip, p)
-    return out
+    rememberWifiTarget(ip, p)
+    const serial = `${String(ip).trim()}:${Number(p) || 5555}`
+    const atx = await ensureAtx(serial).catch((e) => ({
+      ok: false,
+      error: e?.message || String(e)
+    }))
+    return { message: out, target: serial, atx }
   })
 
   /**
    * 添加 WiFi 设备：
    * - 有配对码：adb pair IP:port CODE → adb connect IP:port（同一端口）
    * - 无配对码：adb connect IP:port
-   * 点击即保存表单（ip/port/pairCode）到本地，供下次自动回填
+   * 仅连接成功后写入 knownWifi，并自动检测/安装 ATX
    */
-  ipcMain.handle('device:add-wifi', async (_e, { ip, port, pairCode } = {}) => {
+  ipcMain.handle('device:add-wifi', async (_e, { ip, port, pairPort, pairCode, connectPort } = {}) => {
     if (!ip) throw new Error('ip is required')
-    const p = Number(port) || 5555
+    const cPort = Number(connectPort ?? port) || 5555
+    const pPort = Number(pairPort ?? port ?? connectPort) || cPort
     const code = String(pairCode || '').trim()
 
-    // 点击即保存表单 + knownWifi
-    saveWifiForm({ ip, port: p, pairCode: code })
-    rememberWifiTarget(ip, p)
-
-    if (code) {
-      // 配对与连接使用同一端口
-      const r = await pairAndConnect(ip, p, code)
-      if (r?.connectTarget) rememberWifiFromTarget(r.connectTarget)
-      else if (r?.port) rememberWifiTarget(ip, r.port)
-      return { mode: 'pair', ip, port: p, ...r }
-    }
-
-    // 无配对码：直接 adb connect
-    const message = await adbConnect(ip, p)
-    return {
-      mode: 'connect',
+    saveWifiForm({
       ip,
-      port: p,
-      target: `${String(ip).trim()}:${p}`,
-      message
+      port: cPort,
+      pairPort: code ? pPort : '',
+      pairCode: code
+    })
+
+    let result
+    if (code) {
+      const r = await pairAndConnect(ip, pPort, code, cPort)
+      if (r?.connectTarget) rememberWifiFromTarget(r.connectTarget)
+      else if (r?.connectPort) rememberWifiTarget(ip, r.connectPort)
+      result = { mode: 'pair', ip, port: r.connectPort || cPort, pairPort: pPort, ...r }
+    } else {
+      const message = await adbConnect(ip, cPort)
+      rememberWifiTarget(ip, cPort)
+      result = {
+        mode: 'connect',
+        ip,
+        port: cPort,
+        target: `${String(ip).trim()}:${cPort}`,
+        message
+      }
     }
+
+    const serial = result.connectTarget || result.target || `${String(ip).trim()}:${result.port || cPort}`
+    const atx = await ensureAtx(serial).catch((e) => ({
+      ok: false,
+      serial,
+      error: e?.message || String(e)
+    }))
+    return { ...result, atx }
+  })
+
+  ipcMain.handle('device:ensure-atx', async (_e, { serial, force } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await ensureAtx(serial, { force: Boolean(force) })
+  })
+
+  ipcMain.handle('device:atx-install', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await atxForceInstall(serial)
+  })
+
+  ipcMain.handle('device:atx-check', async (_e, { serial } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await atxCheck(serial)
+  })
+
+  /** 打开 ATX / uiautomator APK / atx-agent 官方下载页 */
+  ipcMain.handle('device:atx-open-downloads', async (_e, { which } = {}) => {
+    const urls =
+      which === 'apk'
+        ? [ATX_DOWNLOAD_URLS.apk]
+        : which === 'apkDirect'
+          ? [ATX_DOWNLOAD_URLS.apkDirect]
+          : which === 'agent'
+            ? [ATX_DOWNLOAD_URLS.agent]
+            : [ATX_DOWNLOAD_URLS.apk, ATX_DOWNLOAD_URLS.agent]
+    for (const url of urls) {
+      await shell.openExternal(url)
+    }
+    return { ok: true, urls }
+  })
+
+  ipcMain.handle('shell:open-external', async (_e, { url } = {}) => {
+    const u = String(url || '').trim()
+    if (!/^https?:\/\//i.test(u)) throw new Error('invalid url')
+    await shell.openExternal(u)
+    return { ok: true, url: u }
   })
 
   ipcMain.handle('device:wifi-form:get', () => getWifiForm())
@@ -443,7 +509,13 @@ app.whenReady().then(async () => {
       tcpProbeFirst: true
     })
     for (const r of results) {
-      if (r?.ok && r?.target) rememberWifiFromTarget(r.target)
+      if (r?.ok && r?.target) {
+        rememberWifiFromTarget(r.target)
+        r.atx = await ensureAtx(r.target).catch((e) => ({
+          ok: false,
+          error: e?.message || String(e)
+        }))
+      }
     }
     return results
   })
@@ -547,11 +619,12 @@ app.whenReady().then(async () => {
     return r
   })
 
-  ipcMain.handle('onboarding:pair-and-connect', async (_e, { ip, port, code } = {}) => {
-    if (!ip || !port || !code) throw new Error('ip/port/code is required')
-    // 配对前先记下 IP
-    rememberWifiTarget(ip, port)
-    const r = await pairAndConnect(ip, port, code)
+  ipcMain.handle('onboarding:pair-and-connect', async (_e, { ip, port, code, pairPort, connectPort } = {}) => {
+    if (!ip || !code) throw new Error('ip/code is required')
+    const pPair = Number(pairPort ?? port)
+    const pConnect = Number(connectPort ?? 0)
+    if (!pPair) throw new Error('pairPort/port is required')
+    const r = await pairAndConnect(ip, pPair, code, pConnect || undefined)
     if (r?.connectTarget) rememberWifiFromTarget(r.connectTarget)
     return r
   })
@@ -564,6 +637,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('onboarding:atx-install', async (_e, { serial } = {}) => {
     if (!serial) throw new Error('serial is required')
     return await atxInstall(serial)
+  })
+
+  ipcMain.handle('onboarding:ensure-atx', async (_e, { serial, force } = {}) => {
+    if (!serial) throw new Error('serial is required')
+    return await ensureAtx(serial, { force: Boolean(force) })
   })
 
   ipcMain.handle('onboarding:permission-check', async (_e, { serial } = {}) => {
@@ -682,6 +760,34 @@ app.whenReady().then(async () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('scripts:event', payload)
       }
+    }
+
+    const serials = Array.isArray(deviceSerials) ? deviceSerials.filter(Boolean) : []
+    for (const serial of serials) {
+      send({
+        type: 'log',
+        runId: `preflight:${serial}`,
+        key,
+        device: serial,
+        data: { msg: '[atx] 检测中…' }
+      })
+      const atx = await ensureAtx(serial).catch((e) => ({
+        ok: false,
+        error: e?.message || String(e)
+      }))
+      send({
+        type: 'log',
+        runId: `preflight:${serial}`,
+        key,
+        device: serial,
+        data: {
+          msg: atx?.ok
+            ? atx.skipped
+              ? '[atx] 已就绪'
+              : `[atx] 已自动安装(${atx.install?.method || 'auto'})`
+            : `[atx] 未就绪: ${atx?.error || 'unknown'}`
+        }
+      })
     }
 
     const r = startScript({ key, params, deviceSerials }, (evt) => send(evt))

@@ -213,6 +213,55 @@ function resolvePythonRuntime() {
   return makeExternalRuntime('python')
 }
 
+/** 供 ATX 安装等主进程任务复用同一套 Python 解析 */
+export function getPythonRuntime() {
+  return resolvePythonRuntime()
+}
+
+export function getScriptPythonEnv() {
+  return buildBaseEnv()
+}
+
+/**
+ * 运行 python -m ...（如 uiautomator2 init）
+ * @returns {Promise<{ code:number, stdout:string, stderr:string }>}
+ */
+export function runPythonModule(moduleArgs = [], { timeoutMs = 180000 } = {}) {
+  const runtime = resolvePythonRuntime()
+  const env = buildBaseEnv()
+  const args = Array.isArray(moduleArgs) ? moduleArgs : []
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(runtime.pythonExe, args, {
+      env,
+      windowsHide: true
+    })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL')
+      } catch {}
+      reject(new Error(`python timeout after ${timeoutMs}ms: ${args.join(' ')}`))
+    }, timeoutMs)
+
+    child.stdout.on('data', (d) => {
+      stdout += Buffer.isBuffer(d) ? d.toString('utf8') : String(d)
+    })
+    child.stderr.on('data', (d) => {
+      stderr += Buffer.isBuffer(d) ? d.toString('utf8') : String(d)
+    })
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve({ code: code ?? 1, stdout, stderr, pythonExe: runtime.pythonExe })
+    })
+  })
+}
+
 function buildPythonCommand() {
   return resolvePythonRuntime().pythonExe
 }

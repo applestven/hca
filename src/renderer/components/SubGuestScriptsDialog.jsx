@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 
 function blankStep(order = 1) {
-  return { order, messages: [''], delay: { min: 2, max: 5 } }
+  return { order, messages: [''], delay: { min: 0.8, max: 1.5 } }
 }
 
 function blankScript() {
@@ -23,6 +23,17 @@ function blankScript() {
     variables: ['name'],
     steps: [blankStep(1)]
   }
+}
+
+/** 编辑中允许临时字符串（如 "0."）；保存时再钳制到 0.1–10 */
+function isDelayTyping(raw) {
+  return raw === '' || /^\d*\.?\d*$/.test(String(raw))
+}
+
+function clampDelay(v, fallback = 0.8) {
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(10, Math.max(0.1, n))
 }
 
 function downloadJson(filename, obj) {
@@ -182,23 +193,29 @@ export default function SubGuestScriptsDialog({ open, onOpenChange, pushLog }) {
       scripts: nextScripts,
       selectedIds: (pack.selectedIds || []).filter((x) => x !== id)
     }
-    setActiveId(nextScripts[0]?.id || '')
-    await persist(next)
+    const saved = await persist(next)
+    setActiveId(saved.scripts?.[0]?.id || '')
   }
 
   const saveActive = async () => {
-    // 规范化 order
+    // 规范化 order；间隔钳制到 0.1–10（含默认话术，均可编辑保存）
     const nextScripts = scripts.map((s) => {
       if (s.id !== active?.id) return s
-      const steps = (s.steps || []).map((st, i) => ({
-        ...st,
-        order: i + 1,
-        messages: (st.messages || []).map((m) => String(m ?? '')).filter((m, idx, arr) => m || arr.length === 1),
-        delay: {
-          min: Number(st.delay?.min) || 1,
-          max: Math.max(Number(st.delay?.max) || 1, Number(st.delay?.min) || 1)
+      const steps = (s.steps || []).map((st, i) => {
+        const min = clampDelay(st.delay?.min, 0.8)
+        const max = clampDelay(st.delay?.max, Math.max(min, 1.5))
+        return {
+          ...st,
+          order: i + 1,
+          messages: (st.messages || [])
+            .map((m) => String(m ?? ''))
+            .filter((m, idx, arr) => m || arr.length === 1),
+          delay: {
+            min,
+            max: Math.max(max, min)
+          }
         }
-      }))
+      })
       return { ...s, steps }
     })
     await persist({ ...pack, scripts: nextScripts })
@@ -245,7 +262,7 @@ export default function SubGuestScriptsDialog({ open, onOpenChange, pushLog }) {
         <DialogHeader>
           <DialogTitle>Sub 话术管理</DialogTitle>
           <DialogDescription>
-            勾选参与随机的话术（会记住上次选择）。新用户将从勾选集合中随机分配一条话术。
+            勾选参与随机的话术（含默认话术均可编辑保存）。新用户从勾选集合中随机分配。仅在没有任何话术时会自动生成一条默认话术。
           </DialogDescription>
         </DialogHeader>
 
@@ -298,7 +315,7 @@ export default function SubGuestScriptsDialog({ open, onOpenChange, pushLog }) {
                 <Button
                   size="sm"
                   variant="destructive"
-                  disabled={busy || scripts.length <= 1}
+                  disabled={busy}
                   onClick={() => removeScript(s.id)}
                 >
                   删除
@@ -344,27 +361,49 @@ export default function SubGuestScriptsDialog({ open, onOpenChange, pushLog }) {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <Label className="text-xs">间隔 min(秒)</Label>
+                        <Label className="text-xs">间隔 min(秒) 0.1–10</Label>
                         <Input
                           className="mt-1"
-                          value={st.delay?.min ?? 2}
-                          onChange={(e) =>
+                          inputMode="decimal"
+                          value={st.delay?.min ?? ''}
+                          placeholder="0.8"
+                          onChange={(e) => {
+                            const raw = e.target.value
+                            if (!isDelayTyping(raw)) return
                             updateStep(si, {
-                              delay: { ...st.delay, min: Number(e.target.value) || 0 }
+                              delay: { ...st.delay, min: raw }
                             })
-                          }
+                          }}
+                          onBlur={() => {
+                            const min = clampDelay(st.delay?.min, 0.8)
+                            const max = clampDelay(st.delay?.max, Math.max(min, 1.5))
+                            updateStep(si, {
+                              delay: { min, max: Math.max(max, min) }
+                            })
+                          }}
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">间隔 max(秒)</Label>
+                        <Label className="text-xs">间隔 max(秒) 0.1–10</Label>
                         <Input
                           className="mt-1"
-                          value={st.delay?.max ?? 5}
-                          onChange={(e) =>
+                          inputMode="decimal"
+                          value={st.delay?.max ?? ''}
+                          placeholder="1.5"
+                          onChange={(e) => {
+                            const raw = e.target.value
+                            if (!isDelayTyping(raw)) return
                             updateStep(si, {
-                              delay: { ...st.delay, max: Number(e.target.value) || 0 }
+                              delay: { ...st.delay, max: raw }
                             })
-                          }
+                          }}
+                          onBlur={() => {
+                            const min = clampDelay(st.delay?.min, 0.8)
+                            const max = clampDelay(st.delay?.max, Math.max(min, 1.5))
+                            updateStep(si, {
+                              delay: { min, max: Math.max(max, min) }
+                            })
+                          }}
                         />
                       </div>
                     </div>

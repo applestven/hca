@@ -48,7 +48,21 @@ def pick_candidate(candidates: List[Dict[str, Any]], selected: Set[str]) -> Dict
     pool = [c for c in candidates if c.get("userId") and c["userId"] not in selected]
     if not pool:
         return None
+    # 优先有未读的会话（waiting 用户更可能已回复）
+    unread_pool = [c for c in pool if int(c.get("unread") or 0) > 0]
+    if unread_pool:
+        return random.choice(unread_pool)
     return random.choice(pool)
+
+
+def clamp_delay(v, fallback: float, lo: float = 0.1, hi: float = 10.0) -> float:
+    try:
+        n = float(v)
+    except Exception:
+        n = fallback
+    if not (n == n):  # NaN
+        n = fallback
+    return max(lo, min(hi, n))
 
 
 def process_one(
@@ -60,17 +74,23 @@ def process_one(
     max_retry: int,
     dry_run: bool,
     package: str,
+    delay_min: float = 0.8,
+    delay_max: float = 1.5,
+    back_delay_min: float = 0.3,
+    back_delay_max: float = 0.8,
 ) -> str:
     """返回 success|fail|skipped"""
     import ui_sub
 
     user_id = candidate.get("userId") or ""
     display_name = candidate.get("displayName") or ""
+    list_unread = int(candidate.get("unread") or 0)
 
     assign = api.assign(user_id, display_name)
     user = assign.get("user") or {}
     log(
-        f"状态 scriptId={user.get('scriptId')} nextStep={user.get('nextStep')} status={user.get('status')}",
+        f"状态 scriptId={user.get('scriptId')} nextStep={user.get('nextStep')} "
+        f"status={user.get('status')} unread={list_unread}",
         step="state_read",
         userId=user_id,
     )
@@ -87,7 +107,7 @@ def process_one(
     user = claim.get("user") or user
 
     try:
-        # waitingReply：检测对方新回复
+        # waiting：进聊天读最新气泡；末条是对方 → 继续发下一句本
         if user.get("waitingReply") or user.get("status") == "waiting":
             if dry_run:
                 log("dry_run：模拟检测到回复", step="reply_check", userId=user_id)
@@ -96,17 +116,26 @@ def process_one(
             else:
                 if not ui_sub.open_session_by_name(d, display_name):
                     api.release(user_id, device)
-                    log("打不开会话", step="skip", userId=user_id)
+                    log("打不开会话(未进入聊天页)", step="skip", userId=user_id)
                     return "skipped"
-                bubbles = ui_sub.read_chat_bubbles(d)
-                ok, reply_id = ui_sub.detect_new_reply(bubbles, user.get("lastSendMessageId"))
+                if not ui_sub.is_chat_page(d):
+                    api.release(user_id, device)
+                    log("打开后不在聊天页", step="skip", userId=user_id)
+                    return "skipped"
+
+                # 进入聊天 = 可见区即最新消息：先读气泡再判定
+                time.sleep(0.4)
+                ui_sub.scroll_chat_to_bottom(d)
+                bubbles = ui_sub.read_chat_bubbles_retry(d, attempts=3)
+                summary = ui_sub.bubbles_summary(bubbles)
+                ok, reply_id = ui_sub.detect_new_reply(bubbles)
                 log(
-                    f"reply_check ok={ok} replyId={reply_id or 'unknown'}",
+                    f"reply_check ok={ok} replyId={reply_id or 'unknown'} {summary}",
                     step="reply_check",
                     userId=user_id,
                 )
                 if not ok:
-                    ui_sub.go_back(d)
+                    ui_sub.go_back(d, settle=random.uniform(0.3, 0.8))
                     api.release(user_id, device)
                     return "skipped"
                 api.reply(user_id, last_reply_message_id=reply_id, device=device)
@@ -138,12 +167,14 @@ def process_one(
 
         messages = step_def.get("messages") or []
         rendered = api.render(messages, {"name": display_name}).get("messages") or messages
-        delay = step_def.get("delay") or {}
-        dmin = float(delay.get("min") or 2)
-        dmax = float(delay.get("max") or max(dmin, 5))
+        # 间隔以脚本面板参数为准（可调 0.1–10）
+        dmin = clamp_delay(delay_min, 0.8)
+        dmax = clamp_delay(delay_max, 1.5)
+        if dmax < dmin:
+            dmax = dmin
 
         log(
-            f"准备发送 nextStep={next_step} content={rendered}",
+            f"准备发送 nextStep={next_step} content={rendered} delay={dmin:.2f}-{dmax:.2f}s",
             step="before_send",
             userId=user_id,
         )
@@ -179,9 +210,13 @@ def process_one(
         if dry_run:
             last_id = f"dry_send_{next_step}_{int(time.time())}"
         else:
-            time.sleep(0.6)
+            time.sleep(0.45)
             bubbles = ui_sub.read_chat_bubbles(d)
             last_id = ui_sub.last_me_message_id(bubbles)
+            if not last_id and rendered:
+                from api import make_message_key as _mk
+
+                last_id = _mk("me", (rendered[-1] or "").strip())
 
         api.send_ok(
             user_id,
@@ -194,7 +229,13 @@ def process_one(
         log("发送成功", step="send", userId=user_id, content=list(rendered), result="success")
 
         if not dry_run:
-            ui_sub.go_back(d)
+            bmin = clamp_delay(back_delay_min, 0.3)
+            bmax = clamp_delay(back_delay_max, 0.8)
+            if bmax < bmin:
+                bmax = bmin
+            time.sleep(random.uniform(bmin, bmax))
+            ui_sub.go_back(d, settle=random.uniform(0.25, 0.45))
+            ui_sub.ensure_message_list(d, timeout=3.0)
         api.release(user_id, device)
         return "success"
     except Exception as e:
@@ -230,13 +271,25 @@ def main() -> int:
     max_retry = int(params.get("max_retry") or 3)
     package = str(params.get("package") or ui_sub.PKG)
     dry_run = bool(int(params.get("dry_run") or 0))
+    delay_min = clamp_delay(params.get("delay_min"), 0.8)
+    delay_max = clamp_delay(params.get("delay_max"), 1.5)
+    if delay_max < delay_min:
+        delay_max = delay_min
+    back_delay_min = clamp_delay(params.get("back_delay_min"), 0.3)
+    back_delay_max = clamp_delay(params.get("back_delay_max"), 0.8)
+    if back_delay_max < back_delay_min:
+        back_delay_max = back_delay_min
 
     base = os.environ.get("HCA_SUB_GUEST_API") or params.get("api_base") or ""
     crm = api_mod.SubGuestApi(base)
 
     try:
         h = crm.health()
-        log(f"CRM API ok root={h.get('rootDir')}", step="start", device=device)
+        log(
+            f"CRM API ok root={h.get('rootDir')} delay={delay_min}-{delay_max}s back={back_delay_min}-{back_delay_max}s",
+            step="start",
+            device=device,
+        )
     except Exception as e:
         emit({"type": "error", "msg": f"CRM API 不可用: {e}. 请确认 Electron 主进程已启动 subGuest HTTP。"})
         return 1
@@ -246,8 +299,39 @@ def main() -> int:
 
     if not dry_run:
         ui_sub.ensure_app(d, package=package)
-        if not ui_sub.open_message_tab(d):
-            log("未找到消息入口，继续尝试采集列表", step="enter_msg")
+        try:
+            cur = d.app_current() or {}
+            log(
+                f"当前界面 package={cur.get('package')} activity={cur.get('activity')}",
+                step="app",
+                device=device,
+            )
+        except Exception as e:
+            log(f"读取当前界面失败: {e}", step="app", device=device)
+
+        opened = ui_sub.open_message_tab(d)
+        if not opened:
+            # 再启一次 App 后重试
+            try:
+                d.app_start(package)
+                time.sleep(2.0)
+            except Exception:
+                pass
+            opened = ui_sub.open_message_tab(d)
+        if not opened:
+            emit(
+                {
+                    "type": "error",
+                    "msg": (
+                        "未进入消息列表：请在该设备上手动打开 Sub App 到「消息」页后重试；"
+                        "若持续报 INJECT_EVENTS，请在开发者选项关闭「禁止权限监控/指针位置」相关限制，"
+                        "或重新安装/初始化 uiautomator2(atx-agent)。"
+                    ),
+                    "device": device,
+                }
+            )
+            return 1
+        log("已进入消息列表", step="enter_msg", device=device)
 
     selected: Set[str] = set()
     success_n = fail_n = skip_n = 0
@@ -265,7 +349,10 @@ def main() -> int:
         else:
             candidates = ui_sub.collect_session_candidates(d)
             if not candidates:
-                ui_sub.scroll_message_list(d)
+                try:
+                    ui_sub.scroll_message_list(d)
+                except Exception as e:
+                    log(f"滑动列表失败(已忽略): {e}", step="scroll")
                 candidates = ui_sub.collect_session_candidates(d)
 
         if not candidates:
@@ -276,7 +363,10 @@ def main() -> int:
         if not cand:
             # 下滑再采
             if not dry_run:
-                ui_sub.scroll_message_list(d)
+                try:
+                    ui_sub.scroll_message_list(d)
+                except Exception as e:
+                    log(f"滑动列表失败(已忽略): {e}", step="scroll")
                 candidates = ui_sub.collect_session_candidates(d)
                 cand = pick_candidate(candidates, selected)
             if not cand:
@@ -299,6 +389,10 @@ def main() -> int:
             max_retry=max_retry,
             dry_run=dry_run,
             package=package,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            back_delay_min=back_delay_min,
+            back_delay_max=back_delay_max,
         )
         if result == "success":
             success_n += 1

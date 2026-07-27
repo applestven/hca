@@ -187,7 +187,7 @@ CREATE INDEX idx_users_locked ON users(locked_by);
       "steps": [
         {
           "order": 1,
-          "messages": ["哈哈 {name}", "晚上好"],
+          "messages": ["哈哈 {name}", "你好"],
           "delay": { "min": 2, "max": 5 }
         },
         {
@@ -208,7 +208,7 @@ CREATE INDEX idx_users_locked ON users(locked_by);
 
 发送前模板渲染：`{name}` ← `displayName`（拿不到则去掉占位或用空串）。未知变量原样保留或清空，行为写死一种并打日志。
 
-默认话术内容不变：1 `哈哈`→`晚上好`；2 `你经常玩这个吗`→`好怕被人发现啊`；3 `哈哈哈`（默认模板可不强制带 `{name}`）。
+默认话术内容不变：1 `哈哈`→`你好`；2 `你经常玩这个吗`→`好怕被人发现啊`；3 `哈哈哈`（默认模板可不强制带 `{name}`）。
 
 ---
 

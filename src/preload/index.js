@@ -31,7 +31,8 @@ const api = {
     isMaximized: () => electronAPI.ipcRenderer.invoke('window:is-maximized')
   },
   app: {
-    getVersion: () => electronAPI.ipcRenderer.invoke('app:get-version')
+    getVersion: () => electronAPI.ipcRenderer.invoke('app:get-version'),
+    openExternal: (url) => electronAPI.ipcRenderer.invoke('shell:open-external', { url })
   },
   theme: {
     get: () => electronAPI.ipcRenderer.invoke('theme:get'),
@@ -42,11 +43,21 @@ const api = {
     connectWifi: (ip, port) => electronAPI.ipcRenderer.invoke('device:connect-wifi', { ip, port }),
     /**
      * 添加 WiFi 设备（输入即存本地）
-     * - 有 pairCode：adb pair IP:port CODE → adb connect IP:port
+     * - 有 pairCode：adb pair IP:port CODE → adb connect IP:port（同一端口）
      * - 无 pairCode：直接 adb connect IP:port
-     * @param {{ ip: string, port?: number|string, pairCode?: string }} payload
+     * @param {{ ip: string, port?: number|string, pairCode?: string, pairPort?: number|string, connectPort?: number|string }} payload
      */
     addWifi: (payload) => electronAPI.ipcRenderer.invoke('device:add-wifi', payload),
+    ensureAtx: (serial, options) =>
+      electronAPI.ipcRenderer.invoke('device:ensure-atx', {
+        serial,
+        force: options?.force
+      }),
+    atxInstall: (serial) => electronAPI.ipcRenderer.invoke('device:atx-install', { serial }),
+    atxCheck: (serial) => electronAPI.ipcRenderer.invoke('device:atx-check', { serial }),
+    /** 打开 ATX 官方下载页（apk / agent / 全部） */
+    atxOpenDownloads: (which) =>
+      electronAPI.ipcRenderer.invoke('device:atx-open-downloads', { which }),
     getWifiForm: () => electronAPI.ipcRenderer.invoke('device:wifi-form:get'),
     setWifiForm: (payload) => electronAPI.ipcRenderer.invoke('device:wifi-form:set', payload),
     connectMany: (targets, options) =>

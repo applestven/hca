@@ -105,7 +105,10 @@ class SubGuestApi:
         return self.post("/render", {"messages": messages, "vars": vars or {}})
 
 
-def make_message_key(sender: str, text: str, index: int) -> str:
-    """无稳定 messageId 时的指纹。"""
-    raw = f"{sender}|{text}|{index}"
-    return f"mk_{abs(hash(raw))}"
+def make_message_key(sender: str, text: str, index: int = 0) -> str:
+    """无稳定 messageId 时的指纹（跨进程稳定；不含 index，避免滚动后错位）。"""
+    import hashlib
+
+    raw = f"{sender}|{(text or '').strip()}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"mk_{sender}_{digest}"

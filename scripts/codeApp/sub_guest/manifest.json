@@ -15,6 +15,38 @@
       "default": 10
     },
     {
+      "key": "delay_min",
+      "label": "消息间隔min(秒)",
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "placeholder": "0.1–10，句本内多条消息间隔"
+    },
+    {
+      "key": "delay_max",
+      "label": "消息间隔max(秒)",
+      "type": "number",
+      "required": false,
+      "default": 1.5,
+      "placeholder": "0.1–10，需 ≥ min"
+    },
+    {
+      "key": "back_delay_min",
+      "label": "发送后返回min(秒)",
+      "type": "number",
+      "required": false,
+      "default": 0.3,
+      "placeholder": "发完后等待再返回列表"
+    },
+    {
+      "key": "back_delay_max",
+      "label": "发送后返回max(秒)",
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "placeholder": "需 ≥ min"
+    },
+    {
       "key": "wait_reply",
       "label": "需对方回复再推进(1/0)",
       "type": "number",

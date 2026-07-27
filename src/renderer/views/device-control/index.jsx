@@ -75,7 +75,7 @@ export default function DeviceControlPage() {
   const [filterGroup, setFilterGroup] = useState('全部')
   const [keyword, setKeyword] = useState('')
 
-  // WiFi 连接（输入 IP 即存本地；有配对码走 pair，无则直接 connect；端口共用）
+  // WiFi 连接：只填一个端口（配对与连接共用）
   const [wifiIp, setWifiIp] = useState('')
   const [wifiPort, setWifiPort] = useState('5555')
   const [pairCode, setPairCode] = useState('')
@@ -250,6 +250,8 @@ export default function DeviceControlPage() {
       const r = await window.api?.device?.addWifi?.({
         ip,
         port,
+        connectPort: port,
+        pairPort: code ? port : undefined,
         pairCode: code || undefined
       })
 
@@ -265,6 +267,21 @@ export default function DeviceControlPage() {
         pushLog('系统', `配对并连接 ${target}`, msg || 'ok')
       } else {
         pushLog('系统', `adb connect ${ip}:${port}`, r?.message || 'ok')
+      }
+
+      const atx = r?.atx
+      if (atx) {
+        if (atx.ok && atx.skipped) {
+          pushLog('系统', `ATX检测 ${atx.serial || ''}`, atx.cached ? '已就绪(缓存)' : '已就绪')
+        } else if (atx.ok) {
+          pushLog(
+            '系统',
+            `ATX安装 ${atx.serial || ''}`,
+            `ok method=${atx.install?.method || 'auto'}`
+          )
+        } else {
+          pushLog('系统', `ATX安装 ${atx.serial || ''}`, atx.error || '失败')
+        }
       }
 
       await loadDevices({ silent: true })
@@ -305,6 +322,94 @@ export default function DeviceControlPage() {
     }
   }
 
+  /** 强制安装 ATX（不做跳过） */
+  const installAtxOne = async (serial, displayName, { openDownloadsOnFail = true } = {}) => {
+    const sn = String(serial || '').trim()
+    if (!sn) {
+      pushLog('系统', '安装ATX', '请先选择在线设备')
+      return
+    }
+    const label = displayName || sn
+    setBusy(true)
+    pushLog(label, '安装ATX', '开始强制安装（可能需1-2分钟）…')
+    let failed = false
+    try {
+      // 先检测，方便对照
+      const before = await window.api?.device?.atxCheck?.(sn).catch(() => null)
+      if (before) {
+        pushLog(label, 'ATX检测', before.detail || JSON.stringify(before))
+      }
+
+      const atx = await window.api?.device?.atxInstall?.(sn)
+      if (atx?.ok) {
+        pushLog(
+          label,
+          '安装ATX',
+          `成功 apk=${atx.after?.hasApk} jar=${atx.after?.hasJar} method=${atx.install?.method || atx.method || 'auto'} | ${atx.after?.detail || ''}`
+        )
+      } else {
+        failed = true
+        const tip = Array.isArray(atx?.tips) ? atx.tips.join('；') : ''
+        pushLog(
+          label,
+          '安装ATX',
+          [
+            atx?.error || '失败',
+            tip,
+            atx?.install?.adbComp?.detail ? `adb:${atx.install.adbComp.detail}` : '',
+            atx?.after?.detail ? `after:${atx.after.detail}` : '',
+            atx?.before?.detail ? `before:${atx.before.detail}` : ''
+          ]
+            .filter(Boolean)
+            .join(' | ')
+        )
+      }
+    } catch (e) {
+      failed = true
+      pushLog(label, '安装ATX', e?.message || String(e))
+    } finally {
+      setBusy(false)
+    }
+    if (failed && openDownloadsOnFail) {
+      pushLog(label, '下载ATX', '安装未成功，正在打开官方下载页…')
+      await openAtxDownloads()
+    }
+    return { ok: !failed, failed }
+  }
+
+  /** 打开 ATX / APK / atx-agent 下载页 */
+  const openAtxDownloads = async (which) => {
+    try {
+      const out = await window.api?.device?.atxOpenDownloads?.(which)
+      const urls = out?.urls || []
+      pushLog('系统', '下载ATX', urls.length ? `已打开：${urls.join(' | ')}` : '已打开下载页')
+    } catch (e) {
+      pushLog('系统', '下载ATX', e?.message || String(e))
+    }
+  }
+
+  const installAtxSelected = async () => {
+    const list = devices.filter((d) => selectedIds.has(d.id) && d.status === 'online' && d.sn)
+    if (!list.length) {
+      const active = devices.find((d) => d.id === activeDeviceId && d.status === 'online')
+      if (active?.sn) {
+        await installAtxOne(active.sn, active.name)
+        return
+      }
+      pushLog('系统', '安装ATX', '请勾选至少一台在线设备，或先点「控制」选中一台')
+      return
+    }
+    let anyFailed = false
+    for (const d of list) {
+      const r = await installAtxOne(d.sn, d.name, { openDownloadsOnFail: false })
+      if (r?.failed) anyFailed = true
+    }
+    if (anyFailed) {
+      pushLog('系统', '下载ATX', '有设备安装失败，正在打开官方下载页…')
+      await openAtxDownloads()
+    }
+  }
+
   useEffect(() => {
     // 进入设备中控时刷新一次权限，避免权限状态滞后
     Promise.resolve(window.api?.permission?.refresh?.())
@@ -323,6 +428,7 @@ export default function DeviceControlPage() {
         if (!cancelled && form) {
           if (form.ip) setWifiIp(form.ip)
           if (form.port) setWifiPort(String(form.port))
+          else if (form.pairPort) setWifiPort(String(form.pairPort))
           if (form.pairCode != null) setPairCode(String(form.pairCode))
         }
       } catch {
@@ -635,30 +741,41 @@ export default function DeviceControlPage() {
                   <Label className="text-xs">端口</Label>
                   <Input
                     className="mt-1 h-9"
-                    placeholder="5555"
+                    placeholder="配对/连接共用"
                     value={wifiPort}
                     onChange={(e) => setWifiPort(e.target.value)}
                   />
                 </div>
 
                 <div className="col-span-8">
-                  <Label className="text-xs">配对码（可选）</Label>
+                  <Label className="text-xs">配对码（首次配对时填）</Label>
                   <Input
                     className="mt-1 h-9"
-                    placeholder="不填则直接 connect；填写则先 pair 再 connect"
+                    placeholder="不填则只 connect；填写则先 pair 再 connect（同一端口）"
                     value={pairCode}
                     onChange={(e) => setPairCode(e.target.value)}
                   />
                 </div>
 
                 <div className="col-span-8 text-[11px] text-muted-foreground leading-snug">
-                  填配对码：<code>adb pair IP:端口</code> → <code>adb connect IP:端口</code>；不填：直接{' '}
-                  <code>adb connect</code>。IP 提交后立即写入本地。
+                  只需填一个端口：有配对码时用该端口配对并连接；已配对过可只填 IP + 端口。
                 </div>
 
-                <div className="col-span-8 flex gap-2">
-                  <Button size="sm" className="flex-1" disabled={busy} onClick={connectWifi}>
+                <div className="col-span-8 flex flex-wrap gap-2">
+                  <Button size="sm" className="flex-1 min-w-[7rem]" disabled={busy} onClick={connectWifi}>
                     添加设备(WiFi)
+                  </Button>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={installAtxSelected}>
+                    安装ATX(已选)
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => openAtxDownloads()}
+                    title="打开 app-uiautomator.apk 与 atx-agent 官方下载页"
+                  >
+                    下载ATX
                   </Button>
                   <Button size="sm" variant="outline" disabled={busy} onClick={loadDevices}>
                     刷新
@@ -769,7 +886,7 @@ export default function DeviceControlPage() {
                       {d.status === 'online' ? '在线' : '离线'}
                     </span>
                   </div>
-                  <div className="mt-2 flex gap-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="mt-2 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
                     <Button
                       size="sm"
                       variant="secondary"
@@ -780,6 +897,15 @@ export default function DeviceControlPage() {
                       }}
                     >
                       控制
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy || d.status !== 'online'}
+                      onClick={() => installAtxOne(d.sn, d.name)}
+                      title="检测并安装 uiautomator2/ATX 自动化环境"
+                    >
+                      安装ATX
                     </Button>
                     <Button
                       size="sm"

@@ -45,8 +45,13 @@ export function runAdb(args, { timeoutMs = 15000 } = {}) {
       reject(err)
     }, timeoutMs)
 
-    child.stdout.on('data', (d) => (stdout += d.toString()))
-    child.stderr.on('data', (d) => (stderr += d.toString()))
+    child.stdout.on('data', (d) => {
+      stdout += Buffer.isBuffer(d) ? d.toString('utf8') : String(d)
+    })
+    child.stderr.on('data', (d) => {
+      // Windows 下 adb 错误常为系统 ANSI/GBK；先按 utf8，再在上层用错误码兜底
+      stderr += Buffer.isBuffer(d) ? d.toString('utf8') : String(d)
+    })
 
     child.on('error', (e) => {
       clearTimeout(timer)
@@ -82,10 +87,16 @@ function normalizeConnectOutput(stdout, stderr) {
 
 export async function adbConnect(ip, port = 5555) {
   const target = `${String(ip).trim()}:${Number(port) || 5555}`
-  const { stdout, stderr } = await runAdb(['connect', target], { timeoutMs: 3000 })
+  const { stdout, stderr } = await runAdb(['connect', target], { timeoutMs: 5000 })
   const out = normalizeConnectOutput(stdout, stderr)
   if (!isAdbConnectOk(out)) {
-    throw new Error(out || `failed to connect to ${target}`)
+    const raw = out || `failed to connect to ${target}`
+    if (/10061/.test(raw) || /鐢变簬|积极拒绝|refused/i.test(raw)) {
+      throw new Error(
+        `无法连接 ${target}（连接被拒绝 10061）。请确认无线调试已开启，且 IP/端口正确。`
+      )
+    }
+    throw new Error(raw)
   }
   return out
 }

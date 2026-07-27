@@ -36,6 +36,7 @@ function showFriendlyError(message) {
 function ParamField({ p, value, onChange }) {
   const type = p?.type || 'text'
   const required = !!p?.required
+  const isNumber = type === 'number'
   return (
     <div className="space-y-1">
       <Label>
@@ -44,9 +45,16 @@ function ParamField({ p, value, onChange }) {
       </Label>
       <Input
         value={value ?? ''}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const raw = e.target.value
+          if (isNumber) {
+            // 允许输入 0.1 / 0.2 等小数中间态
+            if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return
+          }
+          onChange(raw)
+        }}
         placeholder={String(p?.placeholder ?? p?.default ?? '')}
-        inputMode={type === 'number' ? 'numeric' : undefined}
+        inputMode={isNumber ? 'decimal' : undefined}
         required={required}
       />
     </div>
