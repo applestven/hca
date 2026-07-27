@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import SubGuestScriptsDialog from '@/components/SubGuestScriptsDialog'
 
 function showFriendlyError(message) {
   const raw = String(message || '')
@@ -76,8 +77,20 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
   const [params, setParams] = useState({})
   const [busy, setBusy] = useState(false)
   const [lastRun, setLastRun] = useState(null)
+  const [subGuestOpen, setSubGuestOpen] = useState(false)
+  const [subSelectedCount, setSubSelectedCount] = useState(0)
 
   const selected = useMemo(() => scripts.find((s) => s.key === selectedKey) || null, [scripts, selectedKey])
+  const isSubGuest = selectedKey === 'sub_guest'
+
+  const refreshSubSelection = async () => {
+    try {
+      const ids = await window.api?.subGuest?.getSelectedIds?.()
+      setSubSelectedCount(Array.isArray(ids) ? ids.length : 0)
+    } catch {
+      setSubSelectedCount(0)
+    }
+  }
 
   const load = async () => {
     setBusy(true)
@@ -105,6 +118,11 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
   }, [])
 
   useEffect(() => {
+    if (isSubGuest) refreshSubSelection().catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSubGuest, selectedKey])
+
+  useEffect(() => {
     if (!selected) return
     const next = {}
     for (const p of selected.params || []) {
@@ -120,6 +138,18 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
       pushLog?.('系统', '启动脚本', '请先选择至少 1 台设备')
       showFriendlyError('请先选择至少 1 台设备')
       return
+    }
+
+    if (selectedKey === 'sub_guest') {
+      const ids = (await window.api?.subGuest?.getSelectedIds?.()) || []
+      setSubSelectedCount(ids.length)
+      if (!ids.length) {
+        const msg = '请先在「话术管理」中勾选至少一个话术，再执行 Sub 获客。'
+        pushLog?.('系统', '启动脚本', msg)
+        showFriendlyError(msg)
+        setSubGuestOpen(true)
+        return
+      }
     }
 
     const finalParams = coerceParams(selected?.params, params)
@@ -179,6 +209,17 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
 
       pushLog?.('系统', '脚本环境自检', ok ? 'OK（uiautomator2 依赖齐全）' : 'FAIL（依赖缺失/内置Python不可用）')
       pushLog?.('系统', 'Python', `exe=${r?.pythonExe || '-'}`)
+      pushLog?.(
+        '系统',
+        'Python来源',
+        r?.packaged
+          ? r?.bundled
+            ? '打包版·内置'
+            : '打包版·外部(异常)'
+          : r?.bundled
+            ? '开发版·内置'
+            : '开发版·本机(pyenv/scoop)'
+      )
 
       if (r?.version) {
         pushLog?.('系统', 'Python版本', (r?.version?.stdout || '').trim() || JSON.stringify(r.version))
@@ -264,6 +305,17 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
                 />
               ))}
             </div>
+
+            {isSubGuest && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => setSubGuestOpen(true)}>
+                  话术管理
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  已选话术 {subSelectedCount} 条（新用户从此集合随机）
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -271,8 +323,8 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
           环境变量：脚本可读取 <code className="px-1 rounded bg-muted">HCA_ADB_PATH</code>（内置 adb 路径）
         </div>
         <div className="text-xs text-muted-foreground">
-          Python 优先级：<code className="px-1 rounded bg-muted">resources/python</code>（内置）→
-          <code className="px-1 rounded bg-muted">HCA_PYTHON</code> → 系统 <code className="px-1 rounded bg-muted">python</code>
+          Python 优先级：<code className="px-1 rounded bg-muted">HCA_PYTHON</code> →{' '}
+          <code className="px-1 rounded bg-muted">resources/python</code>（内置，含脚本依赖）→ 本机 pyenv/scoop
         </div>
 
         <div className="text-xs text-muted-foreground">
@@ -289,6 +341,15 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
 
         {lastRun?.runId && <div className="text-xs text-muted-foreground">runId: {lastRun.runId}</div>}
       </CardContent>
+
+      <SubGuestScriptsDialog
+        open={subGuestOpen}
+        onOpenChange={(v) => {
+          setSubGuestOpen(v)
+          if (!v) refreshSubSelection().catch(() => {})
+        }}
+        pushLog={pushLog}
+      />
     </Card>
   )
 }

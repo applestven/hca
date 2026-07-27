@@ -72,30 +72,36 @@ Info "check python (encodings)"
 & $pyExe -c "import encodings; print('encodings ok')" | Out-Host
 
 # Check pip
-$hasPip = $true
-try {
-  & $pyExe -m pip --version | Out-Host
-} catch {
-  $hasPip = $false
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$pipCheck = & $pyExe -m pip --version 2>&1
+$pipExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+$hasPip = ($pipExit -eq 0)
+if (-not $hasPip) {
+  $pipCheck | Out-Host
 }
 
 if (-not $hasPip) {
   Info "pip not available; bootstrap via get-pip.py"
 
-  # embedded often lacks ensurepip; verify DLLs/_socket first
-  if (!(Test-Path $dllsDir)) {
-    Fail "Missing: $dllsDir. Copy the whole 'DLLs' folder from python-3.11.9-embed-amd64.zip into resources\\python\\DLLs"
-  }
-
   $socketOk = $true
-  try {
-    & $pyExe -c "import _socket; print('_socket ok')" | Out-Host
-  } catch {
+  $prevEap2 = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $socketOut = & $pyExe -c "import _socket; print('_socket ok')" 2>&1
+  if ($LASTEXITCODE -ne 0) {
     $socketOk = $false
+    $socketOut | Out-Host
+  } else {
+    $socketOut | Out-Host
   }
+  $ErrorActionPreference = $prevEap2
 
   if (-not $socketOk) {
-    Fail "Cannot import _socket. Ensure resources\\python\\DLLs contains _socket.pyd"
+    if (!(Test-Path $dllsDir)) {
+      Fail "Cannot import _socket. Ensure extension modules exist in resources\\python (or resources\\python\\DLLs). Missing: $dllsDir"
+    }
+    Fail "Cannot import _socket. Ensure resources\\python contains _socket.pyd (or DLLs\\_socket.pyd)"
   }
 
   if (!(Test-Path $getPip)) {

@@ -1,23 +1,33 @@
 import fs from 'fs'
 import { join } from 'path'
 import { spawn } from 'child_process'
+import { createRequire } from 'module'
+import { getSubGuestHttpBaseUrl } from './subGuestStore'
+
+const require = createRequire(import.meta.url)
+
+function isPackagedApp() {
+  try {
+    const { app } = require('electron')
+    return Boolean(app?.isPackaged)
+  } catch {
+    return false
+  }
+}
 
 function getBundledPythonHome() {
-  // 为什么加这个函数：
-  // - 你在 dev（electron-vite）下运行时，process.resourcesPath 往往指向 electron 自带的 dist/resources，
-  //   并不包含我们打包的 python 目录。
-  // - 现在日志里 pythonExe 解析到了 WindowsApps\python.exe（商店占位符），最终表现为 9009。
-  // - 所以需要：dev 优先用仓库内 resources/python；packaged 再用 process.resourcesPath/python。
-
-  const devHome = join(process.cwd(), 'resources', 'python')
+  const exeName = process.platform === 'win32' ? 'python.exe' : 'python3'
   const packagedHome = process.resourcesPath ? join(process.resourcesPath, 'python') : ''
 
-  if (packagedHome && fs.existsSync(join(packagedHome, process.platform === 'win32' ? 'python.exe' : 'python3'))) {
-    return packagedHome
+  // 打包后只认 extraResources 带入的内置 Python，避免 cwd 干扰。
+  if (isPackagedApp()) {
+    if (packagedHome && fs.existsSync(join(packagedHome, exeName))) return packagedHome
+    return ''
   }
-  if (fs.existsSync(join(devHome, process.platform === 'win32' ? 'python.exe' : 'python3'))) {
-    return devHome
-  }
+
+  // dev：使用仓库内 resources/python（不受 electron 自带 resourcesPath 影响）
+  const devHome = join(process.cwd(), 'resources', 'python')
+  if (fs.existsSync(join(devHome, exeName))) return devHome
   return ''
 }
 
@@ -70,6 +80,45 @@ export function listScripts() {
   return out
 }
 
+function isExternalPythonCandidate(p) {
+  if (!p || !fs.existsSync(p)) return false
+  if (!/\.exe$/i.test(p)) return false
+  // Microsoft Store 占位符
+  if (/windowsapps/i.test(p)) return false
+  // pyenv-win shim，spawn -c 时容易把 bat 语法混入参数
+  if (/pyenv-win[\\/]+shims/i.test(p)) return false
+  return true
+}
+
+function listWindowsPythonCandidates() {
+  if (process.platform !== 'win32') return []
+  const found = []
+  const seen = new Set()
+
+  for (const cmd of ['python', 'python3']) {
+    try {
+      const out = require('child_process')
+        .execSync(`where.exe ${cmd}`, { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+
+      for (const p of out) {
+        const key = p.toLowerCase()
+        if (seen.has(key)) continue
+        if (!isExternalPythonCandidate(p)) continue
+        seen.add(key)
+        found.push(p)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return found
+}
+
 function whichOnWindows(cmd) {
   if (process.platform !== 'win32') return null
   try {
@@ -80,16 +129,11 @@ function whichOnWindows(cmd) {
       .map((s) => s.trim())
       .filter(Boolean)
 
-    // 为什么要改：
-    // - pyenv-win 的 shims/python.bat 在某些场景下会把批处理语法混入到 -c 的参数，
-    //   导致你看到的 `import importlib || goto :error` 这种 SyntaxError。
-    // - 对我们来说最稳的是直接用真实的 python.exe。
-
-    const exes = out.filter((p) => /\.exe$/i.test(p))
+    const exes = out.filter((p) => isExternalPythonCandidate(p))
     if (exes.length) return exes[0]
 
-    // 兜底再考虑 .bat
-    const bats = out.filter((p) => /\.bat$/i.test(p))
+    // 兜底再考虑 .bat（pyenv shim 等）
+    const bats = out.filter((p) => /\.bat$/i.test(p) && !/pyenv-win[\\/]+shims/i.test(p))
     if (bats.length) return bats[0]
 
     return out[0] || null
@@ -98,41 +142,170 @@ function whichOnWindows(cmd) {
   }
 }
 
-function buildPythonCommand() {
-  // 1) 内置 Python（优先 dev resources/python，其次 packaged resources/python）
-  try {
-    const pyHome = getBundledPythonHome()
-    const bundled = pyHome ? join(pyHome, process.platform === 'win32' ? 'python.exe' : 'python3') : ''
-    if (bundled && fs.existsSync(bundled)) {
-      const libDir = join(pyHome, 'Lib')
-      if (!fs.existsSync(libDir)) {
-        throw new Error(`内置 Python 缺少 Lib 目录：${libDir}`)
-      }
-      return bundled
-    }
-  } catch {
-    // ignore and fallback
-  }
+function resolveExternalPython() {
+  const candidates = listWindowsPythonCandidates()
+  if (candidates.length) return candidates[0]
 
-  // 2) 环境变量指定
-  const pyFromEnv = process.env.HCA_PYTHON
-  if (pyFromEnv) return pyFromEnv
-
-  // 3) 系统 python（Windows 需要 where 解析到 exe 路径）
   if (process.platform === 'win32') {
-    const resolved = whichOnWindows('python') || whichOnWindows('python3')
-    if (resolved) return resolved
+    return whichOnWindows('python') || whichOnWindows('python3')
   }
 
-  return 'python'
+  return null
+}
+
+function isBundledPythonReady(pyHome) {
+  if (!pyHome) return false
+  const exe = join(pyHome, process.platform === 'win32' ? 'python.exe' : 'python3')
+  if (!fs.existsSync(exe)) return false
+
+  // Embedded Python 标准库在 python3xx.zip；Lib 目录用于 site-packages，首次 bootstrap 前可能不存在。
+  const hasLib = fs.existsSync(join(pyHome, 'Lib'))
+  const hasStdlibZip = fs
+    .readdirSync(pyHome, { withFileTypes: true })
+    .some((d) => d.isFile() && /^python3\d+\.zip$/i.test(d.name))
+
+  return hasLib || hasStdlibZip
+}
+
+function makeBundledRuntime(pyHome) {
+  return {
+    pythonExe: join(pyHome, process.platform === 'win32' ? 'python.exe' : 'python3'),
+    pyHome,
+    bundled: true
+  }
+}
+
+function makeExternalRuntime(pythonExe) {
+  return { pythonExe, pyHome: '', bundled: false }
+}
+
+function isBundledPythonExe(pythonExe, pyHome) {
+  if (!pythonExe || !pyHome) return false
+  const bundledExe = join(pyHome, process.platform === 'win32' ? 'python.exe' : 'python3')
+  try {
+    return fs.realpathSync(pythonExe).toLowerCase() === fs.realpathSync(bundledExe).toLowerCase()
+  } catch {
+    return pythonExe.toLowerCase() === bundledExe.toLowerCase()
+  }
+}
+
+function runtimeFromExplicitPython(pythonExe, pyHome) {
+  if (pyHome && isBundledPythonExe(pythonExe, pyHome)) return makeBundledRuntime(pyHome)
+  return makeExternalRuntime(pythonExe)
+}
+
+function resolvePythonRuntime() {
+  const pyHome = getBundledPythonHome()
+  const bundledReady = isBundledPythonReady(pyHome)
+
+  const pyFromEnv = process.env.HCA_PYTHON
+  if (pyFromEnv && fs.existsSync(pyFromEnv)) {
+    return runtimeFromExplicitPython(pyFromEnv, pyHome)
+  }
+
+  // 内置 Python 已就绪时优先使用（依赖已装在 Lib/site-packages），开发/打包行为一致。
+  if (bundledReady) return makeBundledRuntime(pyHome)
+
+  // 内置不可用时才回退本机 pyenv/scoop；此时会清理 PYTHONHOME，避免 encodings 错误。
+  const external = resolveExternalPython()
+  if (external) return makeExternalRuntime(external)
+
+  return makeExternalRuntime('python')
+}
+
+function buildPythonCommand() {
+  return resolvePythonRuntime().pythonExe
+}
+
+function normalizePthLine(line) {
+  return line.trim().replace(/\\/g, '/').toLowerCase()
+}
+
+function ensureEmbeddedPythonPth(pyHome) {
+  if (!pyHome) return
+
+  const sitePackagesDirs = [
+    join(pyHome, 'Lib', 'site-packages'),
+    join(pyHome, 'Lib', 'site-packages-codeapp')
+  ]
+  for (const dir of sitePackagesDirs) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  }
+
+  const pthCandidates = [join(pyHome, 'python._pth'), join(pyHome, 'python311._pth')]
+  const pth = pthCandidates.find((p) => fs.existsSync(p))
+  if (!pth) return
+
+  let content = fs.readFileSync(pth, 'utf-8')
+  const lines = content.split(/\r?\n/)
+  const normalized = lines.map((l) => normalizePthLine(l))
+
+  const hasLib = normalized.includes('lib')
+  const hasSitePackages = normalized.includes('lib/site-packages')
+  const hasSitePackagesCodeApp = normalized.includes('lib/site-packages-codeapp')
+  const hasImportSite = lines.some((l) => l.trim() === 'import site')
+
+  const next = []
+  const seen = new Set()
+  const pushUnique = (line) => {
+    const key = normalizePthLine(line)
+    if (!key || key.startsWith('#')) {
+      next.push(line)
+      return
+    }
+    if (seen.has(key)) return
+    seen.add(key)
+    next.push(line)
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (/^Lib\\\\site-packages(-codeapp)?$/i.test(trimmed)) {
+      pushUnique(trimmed.replace(/\\\\/g, '\\'))
+      continue
+    }
+    if (trimmed === '#import site') {
+      pushUnique('import site')
+      continue
+    }
+    pushUnique(line)
+  }
+
+  if (!seen.has('lib')) pushUnique('Lib')
+  if (!seen.has('lib/site-packages')) pushUnique('Lib\\site-packages')
+  if (!seen.has('lib/site-packages-codeapp')) pushUnique('Lib\\site-packages-codeapp')
+  if (!next.some((l) => l.trim() === 'import site')) pushUnique('import site')
+
+  const nextContent = next.join('\r\n')
+  if (nextContent !== content) {
+    fs.writeFileSync(pth, nextContent)
+  }
+}
+
+function stripEmbeddedPythonEnv(env, pyHome = '') {
+  delete env.PYTHONHOME
+
+  if (!env.PYTHONPATH) return
+
+  const parts = String(env.PYTHONPATH)
+    .split(process.platform === 'win32' ? ';' : ':')
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((p) => {
+      if (pyHome && p.toLowerCase().startsWith(pyHome.toLowerCase())) return false
+      if (/[\\/]resources[\\/]python([\\/]|$)/i.test(p)) return false
+      return true
+    })
+
+  if (parts.length) env.PYTHONPATH = parts.join(process.platform === 'win32' ? ';' : ':')
+  else delete env.PYTHONPATH
 }
 
 function buildBaseEnv() {
   // 把内置 adb 路径注入给脚本，避免脚本依赖系统 adb
   const adbPath = join(process.cwd(), 'bin', 'scrcpy', process.platform === 'win32' ? 'adb.exe' : 'adb')
 
-  // 内置 Python 目录（dev: resources/python；packaged: process.resourcesPath/python）
-  const pyHome = getBundledPythonHome()
+  const runtime = resolvePythonRuntime()
 
   const env = {
     ...process.env,
@@ -143,42 +316,30 @@ function buildBaseEnv() {
     PYTHONUTF8: '1'
   }
 
-  // Windows Embedded Python：需要设置 PYTHONHOME，并确保 python._pth / python311._pth 含 Lib/site-packages 且启用 import site。
-  if (process.platform === 'win32' && pyHome) {
+  if (process.platform === 'win32' && runtime.bundled && runtime.pyHome) {
     try {
-      const pthCandidates = [join(pyHome, 'python._pth'), join(pyHome, 'python311._pth')]
-      const pth = pthCandidates.find((p) => fs.existsSync(p))
-
-      if (pth) {
-        let content = fs.readFileSync(pth, 'utf-8')
-        const lines = content.split(/\r?\n/)
-
-        const hasLib = lines.some((l) => l.trim().toLowerCase() === 'lib')
-        const hasSitePackages = lines.some((l) => l.trim().toLowerCase() === 'lib\\site-packages')
-        const hasImportSite = lines.some((l) => l.trim() === 'import site')
-
-        const next = [...lines]
-        if (!hasLib) next.splice(Math.max(0, next.length - 1), 0, 'Lib')
-        if (!hasSitePackages) next.splice(Math.max(0, next.length - 1), 0, 'Lib\\site-packages')
-
-        for (let i = 0; i < next.length; i++) {
-          if (next[i].trim() === '#import site') next[i] = 'import site'
-        }
-        if (!hasImportSite) next.push('import site')
-
-        const nextContent = next.join('\r\n')
-        if (nextContent !== content) {
-          fs.writeFileSync(pth, nextContent)
-        }
-      }
+      ensureEmbeddedPythonPth(runtime.pyHome)
     } catch {
       // ignore
     }
 
-    env.PYTHONHOME = pyHome
-    env.PYTHONPATH = [join(pyHome, 'Lib'), join(pyHome, 'Lib', 'site-packages'), env.PYTHONPATH]
+    env.PYTHONHOME = runtime.pyHome
+    env.PYTHONPATH = [
+      join(runtime.pyHome, 'Lib'),
+      join(runtime.pyHome, 'Lib', 'site-packages'),
+      join(runtime.pyHome, 'Lib', 'site-packages-codeapp'),
+      env.PYTHONPATH
+    ]
       .filter(Boolean)
       .join(';')
+    env.PYTHONNOUSERSITE = '1'
+    env.PYTHONSAFEPATH = '0'
+  } else {
+    // 使用 pyenv/scoop 等本机 Python 时，必须清掉内置 Python 残留环境变量。
+    // 否则 PYTHONHOME 指向 resources/python 会导致 encodings 导入失败。
+    stripEmbeddedPythonEnv(env, getBundledPythonHome())
+    delete env.PYTHONNOUSERSITE
+    delete env.PYTHONSAFEPATH
   }
 
   return env
@@ -230,17 +391,26 @@ export function startScript({ key, params = {}, deviceSerials = [] } = {}, onEve
     const spec = buildPythonSpawnSpec()
     const pythonCmdForDisplay = [spec.command, ...spec.argsPrefix].join(' ')
 
+    const runtime = resolvePythonRuntime()
     const baseEnv = buildBaseEnv()
     const env = {
       ...baseEnv,
       // 关键：把 script.path 加到 PYTHONPATH，保证 `import soul` / `import common` 等本地模块可用
-      // - 例如 scripts/codeApp/soul/soul.py 需要能被 `import soul`
-      // - 例如 scripts/codeApp/soul/common/* 需要能被 `import common.xxx`
       PYTHONPATH: [script.path, baseEnv.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
-      // 避免用户环境污染/安全路径导致的 import 异常（尤其在 Windows 上）
-      PYTHONNOUSERSITE: '1',
-      PYTHONSAFEPATH: '0',
       HCA_SCRIPT_DIR: script.path
+    }
+    // Sub 获客 CRM HTTP（主进程本机服务）
+    try {
+      const api = getSubGuestHttpBaseUrl()
+      if (api) env.HCA_SUB_GUEST_API = api
+    } catch {
+      // ignore
+    }
+    if (dev) {
+      // 兼容旧脚本/第三方库读取环境变量选择目标设备，避免多设备时误连到其它 ADB target。
+      env.HCA_DEVICE_SERIAL = dev
+      env.ANDROID_SERIAL = dev
+      env.device = dev
     }
 
     const child = spawn(spec.command, [...spec.argsPrefix, entry, JSON.stringify(merged)], {
@@ -379,6 +549,7 @@ function runPythonCheck(pythonExe, env, code, timeoutMs = 10000) {
 }
 
 export async function checkPythonRuntime() {
+  const runtime = resolvePythonRuntime()
   const spec = buildPythonSpawnSpec()
   const pythonExe = spec.pythonExeForDisplay
   const env = buildBaseEnv()
@@ -401,6 +572,8 @@ export async function checkPythonRuntime() {
 
   return {
     pythonExe,
+    bundled: runtime.bundled,
+    packaged: isPackagedApp(),
     env: {
       PYTHONHOME: env.PYTHONHOME,
       PYTHONPATH: env.PYTHONPATH,

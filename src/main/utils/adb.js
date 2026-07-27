@@ -141,6 +141,10 @@ export async function adbListDevices() {
     const [serial, state, ...rest] = line.split(/\s+/)
     if (!serial) continue
 
+    // adb mdns services 会把 `_adb-tls-connect._tcp` 这样的服务名也列进 devices。
+    // 这不是一台新的实体设备，而是同一台手机的发现记录；展示到 UI 会看起来像“多了一台 USB/离线设备”。
+    if (/_adb(?:-tls-connect)?\._tcp/i.test(serial)) continue
+
     const kv = {}
     for (const token of rest) {
       const idx = token.indexOf(':')

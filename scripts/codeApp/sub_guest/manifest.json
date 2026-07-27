@@ -1,0 +1,47 @@
+{
+  "name": "Sub获客",
+  "key": "sub_guest",
+  "entry": "main.py",
+  "version": "0.1.0",
+  "description": "按话术状态机自动回复 Sub 会话；进度存 SQLite，支持等待回复、失败重试、多设备锁。",
+  "author": "hca",
+  "category": "Sub",
+  "params": [
+    {
+      "key": "limit",
+      "label": "对话次数",
+      "type": "number",
+      "required": true,
+      "default": 10
+    },
+    {
+      "key": "wait_reply",
+      "label": "需对方回复再推进(1/0)",
+      "type": "number",
+      "required": false,
+      "default": 1
+    },
+    {
+      "key": "max_retry",
+      "label": "最大重试次数",
+      "type": "number",
+      "required": false,
+      "default": 3
+    },
+    {
+      "key": "package",
+      "label": "App包名",
+      "type": "text",
+      "required": false,
+      "default": "com.MinorityCulture.MinorityCulture",
+      "placeholder": "默认 com.MinorityCulture.MinorityCulture"
+    },
+    {
+      "key": "dry_run",
+      "label": "仅跑状态机不点UI(1/0)",
+      "type": "number",
+      "required": false,
+      "default": 0
+    }
+  ]
+}

@@ -18,6 +18,8 @@ extraResources:
     to: python
   - from: bin/scrcpy/
     to: bin/scrcpy
+  - from: node_modules/sql.js/dist/sql-wasm.wasm
+    to: sql.js/sql-wasm.wasm
 
 # 说明：resources/python 需包含 python.exe、python3*.dll、python._pth、Lib、Lib/site-packages
 

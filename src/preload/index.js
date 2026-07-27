@@ -1,7 +1,7 @@
 import { contextBridge } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import onboarding from './onboarding'
-import scripts from './scripts'
+import scripts, { subGuest } from './scripts'
 
 const updater = {
   mode: () => electronAPI.ipcRenderer.invoke('update:mode'),
@@ -84,6 +84,7 @@ const api = {
     restart: () => electronAPI.ipcRenderer.invoke('adb:restart')
   },
   scripts,
+  subGuest,
   onboarding,
   updater,
   permission: {

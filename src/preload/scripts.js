@@ -13,4 +13,20 @@ const scripts = {
   }
 }
 
+export const subGuest = {
+  paths: () => electronAPI.ipcRenderer.invoke('subGuest:paths'),
+  apiBase: () => electronAPI.ipcRenderer.invoke('subGuest:api-base'),
+  listScripts: () => electronAPI.ipcRenderer.invoke('subGuest:scripts:list'),
+  saveScripts: (payload) => electronAPI.ipcRenderer.invoke('subGuest:scripts:save', payload),
+  getSelectedIds: () => electronAPI.ipcRenderer.invoke('subGuest:scripts:selected'),
+  setSelectedIds: (ids) => electronAPI.ipcRenderer.invoke('subGuest:scripts:set-selected', { ids }),
+  listUsers: (opts) => electronAPI.ipcRenderer.invoke('subGuest:users:list', opts),
+  getUser: (userId) => electronAPI.ipcRenderer.invoke('subGuest:users:get', { userId }),
+  upsertUser: (user) => electronAPI.ipcRenderer.invoke('subGuest:users:upsert', user),
+  claimUser: (userId, device, opts) =>
+    electronAPI.ipcRenderer.invoke('subGuest:users:claim', { userId, device, ...(opts || {}) }),
+  releaseUser: (userId, device) =>
+    electronAPI.ipcRenderer.invoke('subGuest:users:release', { userId, device })
+}
+
 export default scripts

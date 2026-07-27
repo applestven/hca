@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 
@@ -13,6 +14,13 @@ PACKAGE_NAME = "cn.soulapp.android"
 
 
 def connect_device():
+    serial = (
+        os.environ.get("device")
+        or os.environ.get("HCA_DEVICE_SERIAL")
+        or os.environ.get("ANDROID_SERIAL")
+    )
+    if serial:
+        return u2.connect(serial)
     return u2.connect_usb()
 
 

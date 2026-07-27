@@ -34,6 +34,21 @@ import {
 
 import { listScripts, startScript, stopScript, stopScriptGroup, checkPythonRuntime } from './utils/scriptRunner'
 import { getOrCreateMachineId, createApiClient, canUseScript } from './utils/permission'
+import {
+  startSubGuestHttpServer,
+  stopSubGuestHttpServer,
+  getSubGuestHttpBaseUrl,
+  listScripts as listSubGuestScripts,
+  saveScripts as saveSubGuestScripts,
+  getSelectedScriptIds as getSubGuestSelectedIds,
+  setSelectedScriptIds as setSubGuestSelectedIds,
+  listUsers as listSubGuestUsers,
+  getUser as getSubGuestUser,
+  upsertUser as upsertSubGuestUser,
+  claimUser as claimSubGuestUser,
+  releaseUser as releaseSubGuestUser,
+  getSubGuestPaths
+} from './utils/subGuestStore'
 
 // 更新模式：ui（手动） | force（强制）
 // 优先走更新服务器策略（policy.json），拉取失败再回退到环境变量
@@ -567,6 +582,25 @@ app.whenReady().then(async () => {
     return await checkPythonRuntime()
   })
 
+  // ===== Sub 获客 CRM（话术 / 用户状态） =====
+  ipcMain.handle('subGuest:paths', async () => getSubGuestPaths())
+  ipcMain.handle('subGuest:api-base', async () => getSubGuestHttpBaseUrl())
+  ipcMain.handle('subGuest:scripts:list', async () => listSubGuestScripts())
+  ipcMain.handle('subGuest:scripts:save', async (_e, payload) => saveSubGuestScripts(payload))
+  ipcMain.handle('subGuest:scripts:selected', async () => getSubGuestSelectedIds())
+  ipcMain.handle('subGuest:scripts:set-selected', async (_e, { ids } = {}) =>
+    setSubGuestSelectedIds(ids || [])
+  )
+  ipcMain.handle('subGuest:users:list', async (_e, opts) => listSubGuestUsers(opts || {}))
+  ipcMain.handle('subGuest:users:get', async (_e, { userId } = {}) => getSubGuestUser(userId))
+  ipcMain.handle('subGuest:users:upsert', async (_e, user) => upsertSubGuestUser(user))
+  ipcMain.handle('subGuest:users:claim', async (_e, { userId, device, ttlMs } = {}) =>
+    claimSubGuestUser(userId, device, { ttlMs })
+  )
+  ipcMain.handle('subGuest:users:release', async (_e, { userId, device } = {}) =>
+    releaseSubGuestUser(userId, device)
+  )
+
   // ===== 机器码/权限系统（仅对脚本功能做权限管控） =====
   const permissionStore = new Store({
     name: 'hca-permission',
@@ -707,6 +741,13 @@ app.whenReady().then(async () => {
 
   await initUpdateModeFromPolicy()
 
+  try {
+    const sub = await startSubGuestHttpServer()
+    console.log('[subGuest] http:', sub.baseUrl)
+  } catch (e) {
+    console.error('[subGuest] init failed', e)
+  }
+
   const mainWindow = createWindow()
   wireAutoUpdater(mainWindow)
 
@@ -729,6 +770,12 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', () => {
+  try {
+    stopSubGuestHttpServer()
+  } catch {}
 })
 
 // In this file you can include the rest of your app"s specific main process

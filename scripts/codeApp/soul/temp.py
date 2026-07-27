@@ -1,14 +1,42 @@
-import uiautomator2 as u2
-import time
-import common.utils as utils
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
 import json
-import common.getSoulMsg as getSoulMsg
+import os
+import sys
+import time
 
+import uiautomator2 as u2
+import common.utils as utils
+import common.getSoulMsg as getSoulMsg
 import common.sendMsgSoul as sendMsgSoul
 
-d = u2.connect_usb()
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+
+def parse_params():
+    if len(sys.argv) <= 1:
+        return {}
+    try:
+        return json.loads(sys.argv[1])
+    except Exception:
+        return {}
+
+
+def connect_device(params):
+    serial = (
+        params.get("device")
+        or os.environ.get("HCA_DEVICE_SERIAL")
+        or os.environ.get("ANDROID_SERIAL")
+        or os.environ.get("device")
+    )
+    if serial:
+        return u2.connect(serial)
+    return u2.connect_usb()
+
+
+params = parse_params()
+d = connect_device(params)
 
 print("设备连接成功:", d)
 

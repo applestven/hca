@@ -66,7 +66,7 @@ def connect_device():
         or os.environ.get("HCA_DEVICE_SERIAL")
         or os.environ.get("ANDROID_SERIAL")
     )
-    log(f"连接设备 serial={serial or '(usb)'}", step="connect")
+    log(f"连接设备 serial={serial or '(usb auto)'}", step="connect")
     if serial:
         return u2.connect(serial)
     return u2.connect_usb()

@@ -4,10 +4,21 @@ out
 .DS_Store
 *.log*
 
+# Python bytecode / cache（脚本运行时自动生成）
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
 # bundled embedded python runtime helpers / third-party deps (generated)
 resources/python/get-pip.py
 resources/python/Lib/site-packages/
 resources/python/Lib/site-packages-codeapp/
+resources/python/Scripts/
 
 # optional wheel cache for offline installs
 scripts/codeApp/wheelhouse/
+
+# Sub 获客调试 dump / 本地测试参数（勿提交）
+scripts/codeApp/sub_guest/_dump_*.xml
+scripts/codeApp/sub_guest/_test_*.json
