@@ -762,34 +762,7 @@ app.whenReady().then(async () => {
       }
     }
 
-    const serials = Array.isArray(deviceSerials) ? deviceSerials.filter(Boolean) : []
-    for (const serial of serials) {
-      send({
-        type: 'log',
-        runId: `preflight:${serial}`,
-        key,
-        device: serial,
-        data: { msg: '[atx] 检测中…' }
-      })
-      const atx = await ensureAtx(serial).catch((e) => ({
-        ok: false,
-        error: e?.message || String(e)
-      }))
-      send({
-        type: 'log',
-        runId: `preflight:${serial}`,
-        key,
-        device: serial,
-        data: {
-          msg: atx?.ok
-            ? atx.skipped
-              ? '[atx] 已就绪'
-              : `[atx] 已自动安装(${atx.install?.method || 'auto'})`
-            : `[atx] 未就绪: ${atx?.error || 'unknown'}`
-        }
-      })
-    }
-
+    // 脚本启动不再检测/安装 ATX：uiautomator2 连接不依赖 atx-agent 预检
     const r = startScript({ key, params, deviceSerials }, (evt) => send(evt))
     return r
   })

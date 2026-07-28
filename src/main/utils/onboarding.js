@@ -110,17 +110,28 @@ function findU2Assets() {
 /** 主包 com.github.uiautomator；.test 残留不算已装 APK */
 async function checkU2Packages(serial) {
   const s = String(serial || '').trim()
+  // pm path 偶发空输出（无线 adb 抖动）时再用 list packages 兜底，避免误判未安装后强制卸载
   const out = await adbShell(s, [
     'sh',
     '-c',
-    'echo MAIN:; pm path com.github.uiautomator 2>/dev/null; echo TEST:; pm path com.github.uiautomator.test 2>/dev/null'
+    [
+      'echo MAIN:; pm path com.github.uiautomator 2>/dev/null;',
+      'echo TEST:; pm path com.github.uiautomator.test 2>/dev/null;',
+      'echo LIST:; pm list packages com.github.uiautomator 2>/dev/null'
+    ].join(' ')
   ]).catch(() => '')
   const text = String(out || '')
   const mainPart = (text.split('TEST:')[0] || '').replace(/^MAIN:\s*/i, '')
-  const testPart = text.includes('TEST:') ? text.split('TEST:').slice(1).join('TEST:') : ''
+  const afterMain = text.includes('TEST:') ? text.split('TEST:').slice(1).join('TEST:') : ''
+  const testPart = afterMain.includes('LIST:') ? afterMain.split('LIST:')[0] : afterMain
+  const listPart = text.includes('LIST:') ? text.split('LIST:').slice(1).join('LIST:') : ''
+  const hasApk =
+    /package:/i.test(mainPart) || /package:com\.github\.uiautomator(?:\s|$)/i.test(listPart)
+  const hasTestApk =
+    /package:/i.test(testPart) || /package:com\.github\.uiautomator\.test(?:\s|$)/i.test(listPart)
   return {
-    hasApk: /package:/i.test(mainPart),
-    hasTestApk: /package:/i.test(testPart),
+    hasApk,
+    hasTestApk,
     raw: text.trim()
   }
 }
@@ -158,6 +169,28 @@ async function installU2ComponentsViaAdb(serial, { force = false } = {}) {
         { timeoutMs: 60000 }
       ).catch(() => null)
       steps.push('apk:uninstalled')
+    } else {
+      // 软装：已装则跳过，避免脚本预检时再次弹「安装 ATX」并把前台 App 盖住
+      const existing = await checkU2Packages(s)
+      if (existing.hasApk) {
+        steps.push('apk:already')
+        const jarOut0 = await adbShell(s, [
+          'sh',
+          '-c',
+          'ls -l /data/local/tmp/u2.jar 2>/dev/null || echo missing'
+        ]).catch(() => 'missing')
+        return {
+          ok: true,
+          hasApk: true,
+          hasTestApk: existing.hasTestApk,
+          hasJar: steps.includes('jar:ok') || !String(jarOut0).includes('missing'),
+          steps,
+          tips,
+          assetsDir: assets.dir,
+          assetsApk: assets.apk || '',
+          detail: steps.join(' | ')
+        }
+      }
     }
 
     let installOut = ''
@@ -531,17 +564,21 @@ export async function atxInstall(serial, { force = false } = {}) {
 
   const after = await atxCheck(s)
   const apkStepOk = Array.isArray(adbComp.steps) && adbComp.steps.includes('apk:ok')
-  const ok = Boolean(after.hasApk) && apkStepOk
+  // 软装：设备上已有主包即可（-r 覆盖失败也不该判定整机未就绪）
+  // 强装：必须本轮 apk:ok，避免「残留误判」
+  const ok = force
+    ? Boolean(after.hasApk) && apkStepOk
+    : Boolean(after.hasApk)
   const tips = [
     ...(adbComp.tips || []),
     !after.hasApk
       ? 'APK 未安装成功时：手机开发者选项打开「USB安装」「USB调试（安全设置）」后重试；也可点「下载ATX」手动下载安装'
       : '',
-    !apkStepOk && adbComp.detail ? `安装步骤: ${adbComp.detail}` : ''
+    !apkStepOk && force && adbComp.detail ? `安装步骤: ${adbComp.detail}` : ''
   ].filter(Boolean)
 
   return {
-    ok: ok && (u2Init?.ok || pushAgent?.ok || adbComp.ok),
+    ok: ok && (force ? u2Init?.ok || pushAgent?.ok || adbComp.ok : true),
     method: apkStepOk && after.hasApk ? 'adb-apk' : u2Init?.ok ? 'u2-init+adb' : 'mixed',
     detail: parts.map((p) => `${p.method}:${p.ok ? 'ok' : p.error || p.detail || 'fail'}`).join(' || '),
     parts,
@@ -599,8 +636,72 @@ export async function atxForceInstall(serial) {
 }
 
 /**
- * 检查设备 ATX/uiautomator2；未就绪则自动安装。
- * WiFi 连接成功后应调用。
+ * 软修复：不卸载已装 APK，仅 init/push/`adb install -r`。
+ * 脚本预检 / WiFi 连接后自动调用，避免误判后把 ATX 卸掉。
+ */
+export async function atxSoftInstall(serial) {
+  const s = String(serial || '').trim()
+  if (!s) return { ok: false, error: 'serial is required' }
+
+  const before = await atxCheck(s)
+  // 主包已在：绝不重装 APK，最多拉起 agent / 补 jar
+  if (before.hasApk) {
+    if (before.hasFile && !before.httpOk) {
+      try {
+        await runAdb(['-s', s, 'shell', '/data/local/tmp/atx-agent', 'server', '-d', '--stop'], {
+          timeoutMs: 20000
+        }).catch(() => null)
+        await runAdb(['-s', s, 'shell', '/data/local/tmp/atx-agent', 'server', '-d'], {
+          timeoutMs: 30000
+        })
+        await new Promise((r) => setTimeout(r, 800))
+      } catch {
+        // ignore
+      }
+    } else if (!before.hasFile || !before.running) {
+      try {
+        await installAtxViaPush(s)
+      } catch {
+        // ignore
+      }
+    }
+    const after = await atxCheck(s)
+    const ok = Boolean(after.hasApk)
+    if (ok) atxReadyCache.set(s, Date.now())
+    return {
+      ok,
+      soft: true,
+      preservedApk: true,
+      serial: s,
+      before,
+      after,
+      install: { ok, method: 'preserve-apk', detail: after.detail },
+      tips: ok ? [] : ['主包仍在但自动化服务未就绪，可手动点「安装/修复 ATX」'],
+      error: ok ? undefined : 'ATX 主包在，但 agent/http 未就绪'
+    }
+  }
+
+  const install = await atxInstall(s, { force: false })
+  await new Promise((r) => setTimeout(r, 800))
+  const after = await atxCheck(s)
+  const ok = Boolean(after?.hasApk)
+  if (ok) atxReadyCache.set(s, Date.now())
+  return {
+    ok,
+    soft: true,
+    serial: s,
+    before,
+    install,
+    after,
+    tips: install?.tips || [],
+    downloadUrls: ATX_DOWNLOAD_URLS,
+    error: ok ? undefined : install?.error || 'ATX 软安装未完成（未卸载已有包）'
+  }
+}
+
+/**
+ * 检查设备 ATX/uiautomator2；未就绪则自动软安装（不强制卸载）。
+ * WiFi 连接成功 / 脚本启动预检应调用。手动「强制重装」才走 atxForceInstall。
  */
 export async function ensureAtx(serial, { force = false } = {}) {
   const s = String(serial || '').trim()
@@ -621,7 +722,7 @@ export async function ensureAtx(serial, { force = false } = {}) {
     return { ok: true, skipped: true, serial: s, check: before }
   }
 
-  // 有二进制但没跑起来：先尝试拉起
+  // 有二进制但没跑起来：先尝试拉起（不碰 APK）
   if (before.hasFile && !before.httpOk) {
     try {
       await runAdb(['-s', s, 'shell', '/data/local/tmp/atx-agent', 'server', '-d', '--stop'], {
@@ -637,11 +738,12 @@ export async function ensureAtx(serial, { force = false } = {}) {
         return { ok: true, skipped: true, restarted: true, serial: s, check: again }
       }
     } catch {
-      // fallthrough to install
+      // fallthrough to soft install
     }
   }
 
-  return atxForceInstall(s)
+  // 自动路径禁止 force uninstall，避免「检测→弹安装→ATX 被删」
+  return atxSoftInstall(s)
 }
 
 export async function permissionCheck(serial) {
