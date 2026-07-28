@@ -1,4 +1,4 @@
-# electron-temp
+# subbox
 
 An Electron application with React
 

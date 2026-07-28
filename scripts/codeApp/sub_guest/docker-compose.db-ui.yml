@@ -10,6 +10,6 @@ services:
       SQLITE_DATABASE: sub_guest.db
     volumes:
       - type: bind
-        source: ${SUB_GUEST_DIR:-C:/Users/a1829/AppData/Roaming/electron-temp/sub_guest}
+        source: ${SUB_GUEST_DIR:-C:/Users/a1829/AppData/Roaming/subbox/sub_guest}
         target: /data
     restart: "no"

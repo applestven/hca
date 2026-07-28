@@ -4,7 +4,7 @@
 # 注意：改库前请先停止 HCA / Sub获客脚本，避免和 Electron(sql.js) 同时写坏库。
 
 param(
-  [string]$DbDir = "$env:APPDATA\electron-temp\sub_guest",
+  [string]$DbDir = "$env:APPDATA\subbox\sub_guest",
   [int]$Port = 8088
 )
 
