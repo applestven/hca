@@ -78,23 +78,19 @@ function findAtxAgentPath() {
 
 /** 从内置/本机 Python 的 uiautomator2/assets 找 apk、jar */
 function findU2Assets() {
-  const candidates = [
-    join(process.cwd(), 'resources', 'python', 'Lib', 'site-packages', 'uiautomator2', 'assets'),
-    process.resourcesPath
-      ? join(process.resourcesPath, 'python', 'Lib', 'site-packages', 'uiautomator2', 'assets')
-      : '',
-    join(
-      process.env.USERPROFILE || '',
-      'scoop',
-      'apps',
-      'python',
-      'current',
-      'Lib',
-      'site-packages',
-      'uiautomator2',
-      'assets'
-    )
+  const siteNames = ['site-packages-codeapp', 'site-packages']
+  const roots = [
+    join(process.cwd(), 'resources', 'python', 'Lib'),
+    process.resourcesPath ? join(process.resourcesPath, 'python', 'Lib') : '',
+    join(process.env.USERPROFILE || '', 'scoop', 'apps', 'python', 'current', 'Lib')
   ].filter(Boolean)
+
+  const candidates = []
+  for (const root of roots) {
+    for (const site of siteNames) {
+      candidates.push(join(root, site, 'uiautomator2', 'assets'))
+    }
+  }
 
   for (const dir of candidates) {
     if (!fs.existsSync(dir)) continue
@@ -111,10 +107,30 @@ function findU2Assets() {
   return { dir: '', apk: '', jar: '' }
 }
 
+/** 主包 com.github.uiautomator；.test 残留不算已装 APK */
+async function checkU2Packages(serial) {
+  const s = String(serial || '').trim()
+  const out = await adbShell(s, [
+    'sh',
+    '-c',
+    'echo MAIN:; pm path com.github.uiautomator 2>/dev/null; echo TEST:; pm path com.github.uiautomator.test 2>/dev/null'
+  ]).catch(() => '')
+  const text = String(out || '')
+  const mainPart = (text.split('TEST:')[0] || '').replace(/^MAIN:\s*/i, '')
+  const testPart = text.includes('TEST:') ? text.split('TEST:').slice(1).join('TEST:') : ''
+  return {
+    hasApk: /package:/i.test(mainPart),
+    hasTestApk: /package:/i.test(testPart),
+    raw: text.trim()
+  }
+}
+
 /**
- * 通过 adb push + pm install 安装 u2 组件（APK 必须用 adb，init 在 3.x 往往只推 jar）
+ * 通过 adb push + install 安装 u2 组件（APK 必须用 adb，init 在 3.x 往往只推 jar）
+ * @param {string} serial
+ * @param {{ force?: boolean }} [opts] force=true 时先卸载再装，确保真正重装
  */
-async function installU2ComponentsViaAdb(serial) {
+async function installU2ComponentsViaAdb(serial, { force = false } = {}) {
   const s = String(serial)
   const assets = findU2Assets()
   const steps = []
@@ -132,77 +148,117 @@ async function installU2ComponentsViaAdb(serial) {
   }
 
   if (assets.apk) {
+    if (force) {
+      // 强制：先卸主包/测试包，避免残留导致误判「已安装」却未真正重装
+      await runAdb(['-s', s, 'uninstall', 'com.github.uiautomator'], { timeoutMs: 60000 }).catch(
+        () => null
+      )
+      await runAdb(
+        ['-s', s, 'uninstall', 'com.github.uiautomator.test'],
+        { timeoutMs: 60000 }
+      ).catch(() => null)
+      steps.push('apk:uninstalled')
+    }
+
+    let installOut = ''
     try {
-      await runAdb(['-s', s, 'push', assets.apk, '/data/local/tmp/app-uiautomator.apk'], {
+      // 优先 adb install（比 shell pm install 更稳）
+      const r = await runAdb(['-s', s, 'install', '-r', '-t', '-g', assets.apk], {
         timeoutMs: 120000
       })
-      // 部分机型需要 -g / -t；失败时给出小米等提示
-      let installOut = ''
+      installOut = `${r.stdout || ''}\n${r.stderr || ''}`.trim()
+    } catch (e) {
+      installOut = `${e?.stdout || ''}\n${e?.stderr || ''}\n${e?.message || e}`.trim()
+      // 回退：push + pm install
       try {
-        const r = await runAdb(
-          ['-s', s, 'shell', 'pm', 'install', '-r', '-t', '-g', '/data/local/tmp/app-uiautomator.apk'],
-          { timeoutMs: 120000 }
-        )
-        installOut = `${r.stdout || ''}\n${r.stderr || ''}`.trim()
-      } catch (e) {
-        installOut = `${e?.stdout || ''}\n${e?.stderr || ''}\n${e?.message || e}`.trim()
-        // 再试一次不带 -g
+        await runAdb(['-s', s, 'push', assets.apk, '/data/local/tmp/app-uiautomator.apk'], {
+          timeoutMs: 120000
+        })
         try {
           const r2 = await runAdb(
-            ['-s', s, 'shell', 'pm', 'install', '-r', '-t', '/data/local/tmp/app-uiautomator.apk'],
+            [
+              '-s',
+              s,
+              'shell',
+              'pm',
+              'install',
+              '-r',
+              '-t',
+              '-g',
+              '/data/local/tmp/app-uiautomator.apk'
+            ],
             { timeoutMs: 120000 }
           )
           installOut = `${r2.stdout || ''}\n${r2.stderr || ''}`.trim()
         } catch (e2) {
-          installOut = `${installOut}\n${e2?.message || e2}`
+          const r3 = await runAdb(
+            ['-s', s, 'shell', 'pm', 'install', '-r', '-t', '/data/local/tmp/app-uiautomator.apk'],
+            { timeoutMs: 120000 }
+          ).catch((e3) => e3)
+          installOut = `${installOut}\n${r3?.stdout || ''}\n${r3?.stderr || ''}\n${r3?.message || r3 || e2?.message || e2}`.trim()
         }
+      } catch (ePush) {
+        installOut = `${installOut}\n${ePush?.message || ePush}`
       }
+    }
 
-      if (/Success/i.test(installOut)) {
-        steps.push('apk:ok')
-      } else {
-        steps.push(`apk:fail:${installOut.slice(0, 240)}`)
-        if (/INSTALL_FAILED|Permission|denied|Aborted|null/i.test(installOut) || !/Success/i.test(installOut)) {
-          tips.push(
-            '可通过 adb 安装，但手机需开启：开发者选项 → USB安装 / USB调试（安全设置）。小米/红米常需关闭 MIUI 优化并允许 USB 安装。'
-          )
-        }
-      }
-    } catch (e) {
-      steps.push(`apk:fail:${e?.message || e}`)
-      tips.push('adb 安装 APK 失败，请检查 USB 安装权限。')
+    if (/Success/i.test(installOut)) {
+      steps.push('apk:ok')
+    } else {
+      steps.push(`apk:fail:${installOut.slice(0, 240)}`)
+      tips.push(
+        '可通过 adb 安装，但手机需开启：开发者选项 → USB安装 / USB调试（安全设置）。小米/红米常需关闭 MIUI 优化并允许 USB 安装。'
+      )
     }
   } else {
     steps.push('apk:missing-local')
-    tips.push('本地未找到 app-uiautomator.apk（请确认 resources/python 已安装 uiautomator2）')
+    tips.push(
+      '本地未找到 app-uiautomator.apk（请确认 resources/python/Lib/site-packages-codeapp 已包含 uiautomator2）'
+    )
   }
 
-  // 再确认包名
-  const pkgOut = await adbShell(s, [
+  const pkgs = await checkU2Packages(s)
+  const hasApk = pkgs.hasApk
+  const jarOut = await adbShell(s, [
     'sh',
     '-c',
-    'pm path com.github.uiautomator 2>/dev/null; pm path com.github.uiautomator.test 2>/dev/null; ls -l /data/local/tmp/u2.jar 2>/dev/null || true'
-  ]).catch(() => '')
-  const hasApk = /package:/i.test(String(pkgOut || ''))
-  const hasJar = /u2\.jar/i.test(String(pkgOut || ''))
+    'ls -l /data/local/tmp/u2.jar 2>/dev/null || echo missing'
+  ]).catch(() => 'missing')
+  const hasJar = steps.includes('jar:ok') || !String(jarOut).includes('missing')
 
   return {
-    ok: hasApk || (hasJar && steps.includes('jar:ok')),
+    ok: steps.includes('apk:ok') && hasApk,
     hasApk,
+    hasTestApk: pkgs.hasTestApk,
     hasJar,
     steps,
     tips,
     assetsDir: assets.dir,
+    assetsApk: assets.apk || '',
     detail: steps.join(' | ')
   }
 }
 
-function formatAdbError(e) {
+function formatAdbError(e, commands) {
   const msg = e?.message || String(e)
   const stdout = (e?.stdout || '').trim()
   const stderr = (e?.stderr || '').trim()
 
-  const raw = [msg, stdout && `stdout: ${stdout}`, stderr && `stderr: ${stderr}`]
+  const cmdList = []
+  if (Array.isArray(commands)) {
+    for (const c of commands) {
+      if (c && !cmdList.includes(c)) cmdList.push(c)
+    }
+  }
+  if (e?.command && !cmdList.includes(e.command)) cmdList.push(e.command)
+  const cmdBlock = cmdList.length ? `\n执行命令:\n${cmdList.map((c) => `  ${c}`).join('\n')}` : ''
+
+  // 避免与 cmdBlock 重复（adbConnect 等可能已把命令写进 message）
+  const msgClean = cmdBlock
+    ? String(msg).replace(/\n?执行命令[:：][\s\S]*$/, '').trim()
+    : String(msg)
+
+  const raw = [msgClean, stdout && `stdout: ${stdout}`, stderr && `stderr: ${stderr}`]
     .filter(Boolean)
     .join('\n')
 
@@ -211,7 +267,7 @@ function formatAdbError(e) {
     return [
       '连接被拒绝(10061)。',
       '请确认无线调试已开启，且 IP/端口正确；端口变更后需重新填写再连接。'
-    ].join('\n')
+    ].join('\n') + cmdBlock
   }
 
   const lower = raw.toLowerCase()
@@ -239,8 +295,8 @@ function formatAdbError(e) {
     hint.push('可能原因：手机与电脑不在同一 WiFi/网段，或端口未开放。')
   }
 
-  if (hint.length === 0) return raw
-  return `${hint.join('\n')}\n\n--- adb 原始输出 ---\n${raw}`
+  if (hint.length === 0) return raw + cmdBlock
+  return `${hint.join('\n')}\n\n--- adb 原始输出 ---\n${raw}${cmdBlock}`
 }
 
 /** WiFi pair/connect 超时（毫秒） */
@@ -261,6 +317,9 @@ export async function pairAndConnect(ip, pairPort, code, connectPort) {
   const pairCode = String(code || '').trim()
   if (!pairCode) throw new Error('配对码不能为空')
 
+  const pairCmd = `adb pair ${pairTarget} ${pairCode}`
+  const triedCmds = [pairCmd]
+
   try {
     const { stdout: pairOut } = await runAdb(['pair', pairTarget, pairCode], {
       timeoutMs: WIFI_ADB_TIMEOUT_MS
@@ -272,6 +331,7 @@ export async function pairAndConnect(ip, pairPort, code, connectPort) {
     const warnings = []
     let connectOut
     try {
+      triedCmds.push(`adb connect ${String(ip).trim()}:${cPort}`)
       connectOut = await adbConnect(ip, cPort)
     } catch (connectErr) {
       // 同端口连不上时，尝试 mdns 找其它 connect 端口
@@ -288,6 +348,7 @@ export async function pairAndConnect(ip, pairPort, code, connectPort) {
       if (altPort) {
         warnings.push(`端口 ${cPort} 连接失败，已改用发现到的端口 ${altPort}`)
         cPort = altPort
+        triedCmds.push(`adb connect ${String(ip).trim()}:${cPort}`)
         connectOut = await adbConnect(ip, cPort)
       } else {
         throw connectErr
@@ -309,7 +370,7 @@ export async function pairAndConnect(ip, pairPort, code, connectPort) {
     }
   } catch (e) {
     if (e?.paired) throw e
-    throw new Error(formatAdbError(e))
+    throw new Error(formatAdbError(e, triedCmds))
   }
 }
 
@@ -325,12 +386,9 @@ export async function atxCheck(serial) {
     ])
     const hasFile = !String(fileOut).includes('missing')
 
-    const pkgOut = await adbShell(s, [
-      'sh',
-      '-c',
-      'pm path com.github.uiautomator 2>/dev/null; pm path com.github.uiautomator.test 2>/dev/null'
-    ]).catch(() => '')
-    const hasApk = /package:/i.test(String(pkgOut || ''))
+    const pkgs = await checkU2Packages(s)
+    const hasApk = pkgs.hasApk
+    const hasTestApk = pkgs.hasTestApk
 
     const jarOut = await adbShell(s, [
       'sh',
@@ -376,18 +434,19 @@ export async function atxCheck(serial) {
       httpOk = false
     }
 
-    // 自动化可用：APK 已装（推荐），或 jar+agent 可用（u2 3.x）
+    // 自动化可用：主包 APK 已装（推荐），或 jar+agent 可用（u2 3.x）
     const ok = hasApk || (hasJar && (httpOk || (hasFile && running)))
     return {
       ok,
       ready: ok,
       hasFile,
       hasApk,
+      hasTestApk,
       hasJar,
       running,
       httpOk,
       version: version || null,
-      detail: `file=${hasFile} apk=${hasApk} jar=${hasJar} running=${running} http=${httpOk} ver=${version || '-'}`
+      detail: `file=${hasFile} apk=${hasApk} testApk=${hasTestApk} jar=${hasJar} running=${running} http=${httpOk} ver=${version || '-'}`
     }
   } catch (e) {
     return { ok: false, error: formatAdbError(e) }
@@ -435,7 +494,7 @@ async function installAtxViaPush(serial) {
   return { ok: true, method: 'push', atxPath, detail: check }
 }
 
-export async function atxInstall(serial) {
+export async function atxInstall(serial, { force = false } = {}) {
   const s = String(serial || '').trim()
   if (!s) return { ok: false, error: 'serial is required' }
 
@@ -466,21 +525,24 @@ export async function atxInstall(serial) {
 
   // 3) 关键：adb 安装 app-uiautomator.apk + 推送 u2.jar
   //    （u2 3.x 的 init 往往不会装 APK；自动化点击依赖这个包）
-  const adbComp = await installU2ComponentsViaAdb(s)
+  //    force 时先卸载再装，避免残留误判
+  const adbComp = await installU2ComponentsViaAdb(s, { force })
   parts.push({ method: 'adb-apk-jar', ...adbComp })
 
   const after = await atxCheck(s)
-  const ok = Boolean(after.hasApk) || Boolean(after.hasJar && (after.httpOk || after.running))
+  const apkStepOk = Array.isArray(adbComp.steps) && adbComp.steps.includes('apk:ok')
+  const ok = Boolean(after.hasApk) && apkStepOk
   const tips = [
     ...(adbComp.tips || []),
     !after.hasApk
       ? 'APK 未安装成功时：手机开发者选项打开「USB安装」「USB调试（安全设置）」后重试；也可点「下载ATX」手动下载安装'
-      : ''
+      : '',
+    !apkStepOk && adbComp.detail ? `安装步骤: ${adbComp.detail}` : ''
   ].filter(Boolean)
 
   return {
     ok: ok && (u2Init?.ok || pushAgent?.ok || adbComp.ok),
-    method: after.hasApk ? 'adb-apk' : u2Init?.ok ? 'u2-init+adb' : 'mixed',
+    method: apkStepOk && after.hasApk ? 'adb-apk' : u2Init?.ok ? 'u2-init+adb' : 'mixed',
     detail: parts.map((p) => `${p.method}:${p.ok ? 'ok' : p.error || p.detail || 'fail'}`).join(' || '),
     parts,
     adbComp,
@@ -504,12 +566,14 @@ export async function atxForceInstall(serial) {
   atxReadyCache.delete(s)
 
   const before = await atxCheck(s)
-  const install = await atxInstall(s)
+  const install = await atxInstall(s, { force: true })
   await new Promise((r) => setTimeout(r, 1500))
   const after = await atxCheck(s)
-  // 强制安装以 APK 为准；没有 APK 则明确失败提示（即使用户以为 agent 成功）
-  const ok = Boolean(after?.hasApk)
-  if (after?.ok && after?.hasApk) atxReadyCache.set(s, Date.now())
+  const apkStepOk =
+    Array.isArray(install?.adbComp?.steps) && install.adbComp.steps.includes('apk:ok')
+  // 强制安装：必须本轮 apk 安装成功，且设备上存在主包
+  const ok = Boolean(after?.hasApk) && apkStepOk
+  if (ok) atxReadyCache.set(s, Date.now())
   return {
     ok,
     forced: true,
@@ -525,6 +589,7 @@ export async function atxForceInstall(serial) {
       ? undefined
       : [
           install?.error,
+          apkStepOk ? '' : `APK 安装步骤未成功(${install?.adbComp?.detail || 'no-step'})`,
           after?.hasApk ? '' : 'APK 仍未安装(com.github.uiautomator)',
           ...(install?.tips || [])
         ]

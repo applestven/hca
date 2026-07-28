@@ -19,12 +19,24 @@ export function getAdbPath() {
   return join(getScrcpyDir(), process.platform === 'win32' ? 'adb.exe' : 'adb')
 }
 
+function formatAdbCommand(args) {
+  return `adb ${Array.isArray(args) ? args.join(' ') : String(args || '')}`.trim()
+}
+
+function attachAdbCommand(err, args) {
+  if (!err || typeof err !== 'object') return err
+  err.command = formatAdbCommand(args)
+  err.args = Array.isArray(args) ? args : []
+  return err
+}
+
 export function runAdb(args, { timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const adbPath = getAdbPath()
+    const command = formatAdbCommand(args)
 
     if (!fs.existsSync(adbPath)) {
-      reject(new Error(`adb not found: ${adbPath}`))
+      reject(attachAdbCommand(new Error(`adb not found: ${adbPath}`), args))
       return
     }
 
@@ -39,7 +51,10 @@ export function runAdb(args, { timeoutMs = 15000 } = {}) {
       try {
         child.kill('SIGKILL')
       } catch {}
-      const err = new Error(`adb timeout after ${timeoutMs}ms: ${args.join(' ')}`)
+      const err = attachAdbCommand(
+        new Error(`adb timeout after ${timeoutMs}ms: ${args.join(' ')}`),
+        args
+      )
       err.stdout = stdout
       err.stderr = stderr
       reject(err)
@@ -57,16 +72,16 @@ export function runAdb(args, { timeoutMs = 15000 } = {}) {
       clearTimeout(timer)
       e.stdout = stdout
       e.stderr = stderr
-      reject(e)
+      reject(attachAdbCommand(e, args))
     })
 
     child.on('close', (code) => {
       clearTimeout(timer)
       if (code === 0) {
-        resolve({ stdout, stderr })
+        resolve({ stdout, stderr, command })
       } else {
         const msg = (stderr || stdout || '').trim() || `adb exited with code ${code}`
-        const err = new Error(msg)
+        const err = attachAdbCommand(new Error(msg), args)
         err.code = code
         err.stdout = stdout
         err.stderr = stderr
@@ -87,18 +102,37 @@ function normalizeConnectOutput(stdout, stderr) {
 
 export async function adbConnect(ip, port = 5555) {
   const target = `${String(ip).trim()}:${Number(port) || 5555}`
-  const { stdout, stderr } = await runAdb(['connect', target], { timeoutMs: 5000 })
-  const out = normalizeConnectOutput(stdout, stderr)
-  if (!isAdbConnectOk(out)) {
-    const raw = out || `failed to connect to ${target}`
-    if (/10061/.test(raw) || /鐢变簬|积极拒绝|refused/i.test(raw)) {
-      throw new Error(
-        `无法连接 ${target}（连接被拒绝 10061）。请确认无线调试已开启，且 IP/端口正确。`
-      )
+  const args = ['connect', target]
+  const command = formatAdbCommand(args)
+  try {
+    const { stdout, stderr } = await runAdb(args, { timeoutMs: 5000 })
+    const out = normalizeConnectOutput(stdout, stderr)
+    if (!isAdbConnectOk(out)) {
+      const raw = out || `failed to connect to ${target}`
+      let msg
+      if (/10061/.test(raw) || /鐢变簬|积极拒绝|refused/i.test(raw)) {
+        msg = [
+          `无法连接 ${target}（连接被拒绝 10061）。请确认无线调试已开启，且 IP/端口正确。`,
+          `执行命令: ${command}`
+        ].join('\n')
+      } else {
+        msg = `${raw}\n执行命令: ${command}`
+      }
+      throw attachAdbCommand(new Error(msg), args)
     }
-    throw new Error(raw)
+    return out
+  } catch (e) {
+    const err = e?.command ? e : attachAdbCommand(e, args)
+    const text = String(err?.message || '')
+    if (err?.command && !text.includes('执行命令')) {
+      const wrapped = attachAdbCommand(new Error(`${text}\n执行命令: ${err.command}`), args)
+      wrapped.stdout = err.stdout
+      wrapped.stderr = err.stderr
+      wrapped.code = err.code
+      throw wrapped
+    }
+    throw err
   }
-  return out
 }
 
 export async function adbConnectTarget(target) {

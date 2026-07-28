@@ -525,25 +525,65 @@ export function startScript({ key, params = {}, deviceSerials = [] } = {}, onEve
   return { runId, key, script, processes: procs.map((p) => ({ id: p.id })) }
 }
 
+/**
+ * 强制结束脚本进程。
+ * Windows 上 SIGTERM 对卡在 uiautomator2/HTTP 的 Python 经常无效，需 taskkill /T /F。
+ */
+function forceKillChild(child) {
+  if (!child || child.killed) return false
+  const pid = child.pid
+  if (!pid) return false
+
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+      return true
+    } catch {
+      // fall through
+    }
+  }
+
+  try {
+    child.kill('SIGKILL')
+    return true
+  } catch {
+    try {
+      child.kill('SIGTERM')
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
 export function stopScript(runId) {
-  // 精确停止一个
   const child = running.get(runId)
   if (!child) return false
-  try {
-    child.kill('SIGTERM')
-  } catch {}
-  return true
+  const ok = forceKillChild(child)
+  // 兜底：短暂后再杀一次（避免首次 taskkill 竞态）
+  if (ok && child.pid) {
+    setTimeout(() => {
+      if (running.has(runId)) forceKillChild(child)
+    }, 800)
+  }
+  return ok
 }
 
 export function stopScriptGroup(runIdPrefix) {
-  // 停同一批（runId-xxxx:*）
+  // 停同一批（runId-xxxx / runId-xxxx:device）
   let killed = 0
+  const prefix = String(runIdPrefix || '')
+  if (!prefix) return 0
   for (const [id, child] of running.entries()) {
-    if (!String(id).startsWith(String(runIdPrefix))) continue
-    try {
-      child.kill('SIGTERM')
-      killed++
-    } catch {}
+    const sid = String(id)
+    if (sid !== prefix && !sid.startsWith(`${prefix}:`) && !sid.startsWith(prefix)) continue
+    if (forceKillChild(child)) killed++
+    setTimeout(() => {
+      if (running.has(id)) forceKillChild(child)
+    }, 800)
   }
   return killed
 }

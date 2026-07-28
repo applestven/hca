@@ -81,13 +81,15 @@ function coerceParams(scriptParams, rawParams) {
 
 export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
   const [scripts, setScripts] = useState([])
-  const [selectedKey, setSelectedKey] = useState('')
+  const [selectedKey, setSelectedKey] = useState('sub_guest')
   const [params, setParams] = useState({})
   const [busy, setBusy] = useState(false)
   const [lastRun, setLastRun] = useState(null)
   const [subGuestOpen, setSubGuestOpen] = useState(false)
   const [subSelectedCount, setSubSelectedCount] = useState(0)
 
+  // 仅展示 Sub 脚本；完整 scripts 仍保留，启动/权限校验走原逻辑
+  const visibleScripts = useMemo(() => (scripts || []).filter((s) => s.key === 'sub_guest'), [scripts])
   const selected = useMemo(() => scripts.find((s) => s.key === selectedKey) || null, [scripts, selectedKey])
   const isSubGuest = selectedKey === 'sub_guest'
 
@@ -105,7 +107,8 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
     try {
       const list = await window.api?.scripts?.list?.()
       setScripts(list || [])
-      if (!selectedKey && list?.length) setSelectedKey(list[0].key)
+      const visible = (list || []).filter((s) => s.key === 'sub_guest')
+      if (!selectedKey && visible.length) setSelectedKey(visible[0].key)
     } catch (e) {
       pushLog?.('系统', '脚本列表', e?.message || String(e))
     } finally {
@@ -198,14 +201,15 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
   const stop = async () => {
     const runId = lastRun?.runId
     if (!runId) return
-    setBusy(true)
     try {
       const killed = await window.api?.scripts?.stop?.(runId, { group: true })
-      pushLog?.('系统', '停止脚本', `ok(killed=${killed})`)
+      if (killed > 0) {
+        pushLog?.('系统', '停止脚本', `ok(killed=${killed})，已强制结束进程树`)
+      } else {
+        pushLog?.('系统', '停止脚本', `未找到运行中的进程(runId=${runId})，可能已退出`)
+      }
     } catch (e) {
       pushLog?.('系统', '停止脚本', e?.message || String(e))
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -259,7 +263,7 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
           <Button size="sm" variant="outline" disabled={busy} onClick={load}>
             刷新
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy || !lastRun?.runId} onClick={stop}>
+          <Button size="sm" variant="secondary" disabled={!lastRun?.runId} onClick={stop}>
             停止
           </Button>
         </div>
@@ -276,7 +280,7 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
             <option value="" className="text-slate-800 dark:text-slate-800">
               请选择脚本
             </option>
-            {scripts.map((s) => (
+            {visibleScripts.map((s) => (
               <option
                 key={s.key}
                 value={s.key}
@@ -316,7 +320,7 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
 
             {isSubGuest && (
               <div className="flex flex-wrap items-center gap-2 pt-1">
-                <Button size="sm" variant="secondary" disabled={busy} onClick={() => setSubGuestOpen(true)}>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => setSubGuestOpen(true)}>
                   话术管理
                 </Button>
                 <span className="text-xs text-muted-foreground">
@@ -339,7 +343,7 @@ export default function ScriptRunnerPanel({ deviceSerials = [], pushLog }) {
           执行范围：{deviceSerials?.length ? `已选 ${deviceSerials.length} 台设备` : '未选择设备（将以单实例运行）'}
         </div>
 
-        <Button className="w-full" disabled={busy || !selectedKey || !deviceSerials?.length} onClick={start}>
+        <Button className="w-full" variant="outline" disabled={busy || !selectedKey || !deviceSerials?.length} onClick={start}>
           {busy ? '执行中…' : '开始执行'}
         </Button>
 

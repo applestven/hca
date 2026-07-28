@@ -81,7 +81,7 @@ export default function DeviceControlPage() {
   const [pairCode, setPairCode] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const [tab, setTab] = useState('control') // control | batch | script | masterSlave
+  const [tab, setTab] = useState('script') // control | batch | script | masterSlave
 
   // 控制参数
   const [tapX, setTapX] = useState('100')
@@ -345,7 +345,7 @@ export default function DeviceControlPage() {
         pushLog(
           label,
           '安装ATX',
-          `成功 apk=${atx.after?.hasApk} jar=${atx.after?.hasJar} method=${atx.install?.method || atx.method || 'auto'} | ${atx.after?.detail || ''}`
+          `成功 apk=${atx.after?.hasApk} jar=${atx.after?.hasJar} method=${atx.install?.method || atx.method || 'auto'} | ${atx.install?.adbComp?.detail || ''} | ${atx.after?.detail || ''}`
         )
       } else {
         failed = true
@@ -684,8 +684,8 @@ export default function DeviceControlPage() {
       */}
       <div className="grid h-full gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 auto-rows-fr">
         {/* 左侧：设备列表 */}
-        <Card className="h-full flex flex-col min-w-0 sm:col-span-1 lg:col-span-3">
-          <CardHeader className="pb-2">
+        <Card className="h-full flex flex-col min-h-0 min-w-0 sm:col-span-1 lg:col-span-3">
+          <CardHeader className="pb-2 shrink-0">
             <CardTitle className="text-base">设备列表</CardTitle>
 
             {/* 顶部栏：状态 + 全局操作 */}
@@ -758,17 +758,17 @@ export default function DeviceControlPage() {
                 </div>
 
                 <div className="col-span-8 text-[11px] text-muted-foreground leading-snug">
-                  只需填一个端口：有配对码时用该端口配对并连接；已配对过可只填 IP + 端口。
+                  第一次连接或者连接不上的时候 需要使用配对码 日常使用 ip+端口即可 配对码可空不可乱填
                 </div>
 
                 <div className="col-span-8 flex flex-wrap gap-2">
                   <Button size="sm" className="flex-1 min-w-[7rem]" disabled={busy} onClick={connectWifi}>
                     添加设备(WiFi)
                   </Button>
-                  <Button size="sm" variant="secondary" disabled={busy} onClick={installAtxSelected}>
+                  {/* <Button size="sm" variant="secondary" disabled={busy} onClick={installAtxSelected}>
                     安装ATX(已选)
-                  </Button>
-                  <Button
+                  </Button> */}
+                  {/* <Button
                     size="sm"
                     variant="outline"
                     disabled={busy}
@@ -776,7 +776,7 @@ export default function DeviceControlPage() {
                     title="打开 app-uiautomator.apk 与 atx-agent 官方下载页"
                   >
                     下载ATX
-                  </Button>
+                  </Button> */}
                   <Button size="sm" variant="outline" disabled={busy} onClick={loadDevices}>
                     刷新
                   </Button>
@@ -805,7 +805,7 @@ export default function DeviceControlPage() {
 
             <div className="mt-2 grid grid-cols-1 gap-2">
               <div className="grid grid-cols-2 gap-2">
-                <div>
+                {/* <div>
                   <Label className="text-xs">分组</Label>
                   <select
                     className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -827,7 +827,7 @@ export default function DeviceControlPage() {
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
                   />
-                </div>
+                </div> */}
               </div>
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 text-sm">
@@ -844,7 +844,8 @@ export default function DeviceControlPage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex-1 overflow-auto space-y-2">
+          {/* 约 3.5 条设备高度；超出后在列表内纵向滚动 */}
+          <CardContent className="min-h-0 flex-1 max-h-[24rem] overflow-y-auto overscroll-contain space-y-2 pr-1">
             {filteredDevices.map((d) => {
               const checked = selectedIds.has(d.id)
               const isActive = activeDeviceId === d.id
@@ -852,7 +853,7 @@ export default function DeviceControlPage() {
                 <div
                   key={d.id}
                   className={
-                    'rounded-lg border p-2 cursor-pointer ' +
+                    'shrink-0 rounded-lg border p-2 cursor-pointer ' +
                     (isActive ? 'border-primary' : 'border-border')
                   }
                   onClick={() => toggleSelect(d.id)}
@@ -903,7 +904,7 @@ export default function DeviceControlPage() {
                       variant="outline"
                       disabled={busy || d.status !== 'online'}
                       onClick={() => installAtxOne(d.sn, d.name)}
-                      title="检测并安装 uiautomator2/ATX 自动化环境"
+                      title="检测并安装 ATX 自动化环境"
                     >
                       安装ATX
                     </Button>
@@ -965,9 +966,6 @@ export default function DeviceControlPage() {
                 : '未选择设备（选中 1 台设备会自动联动）'}
               <div className="hidden" />
             </div>
-            {/* <div className="mt-3 text-xs text-muted-foreground">
-              脚本目录：<code>bin\scrcpy</code>（下一步接入 scrcpy/adb 能力）
-            </div> */}
           </CardContent>
         </Card>
 
@@ -976,20 +974,20 @@ export default function DeviceControlPage() {
           <CardHeader className="pb-2 space-y-2">
             <CardTitle className="text-base">控制面板</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
-              <Button
+              {/* <Button
                 size="sm"
                 variant={tab === 'control' ? 'default' : 'outline'}
                 onClick={() => setTab('control')}
               >
                 控制
-              </Button>
-              <Button
+              </Button> */}
+              {/* <Button
                 size="sm"
                 variant={tab === 'batch' ? 'default' : 'outline'}
                 onClick={() => setTab('batch')}
               >
                 群控
-              </Button>
+              </Button> */}
               <Button
                 size="sm"
                 variant={tab === 'script' ? 'default' : 'outline'}
@@ -997,13 +995,13 @@ export default function DeviceControlPage() {
               >
                 脚本
               </Button>
-              <Button
+              {/* <Button
                 size="sm"
                 variant={tab === 'masterSlave' ? 'default' : 'outline'}
                 onClick={() => setTab('masterSlave')}
               >
                 主从
-              </Button>
+              </Button> */}
 
               <div className="flex-1" />
 
@@ -1326,11 +1324,11 @@ export default function DeviceControlPage() {
                   deviceSerials={selectedDevices.map((d) => d.sn)}
                   pushLog={pushLog}
                 />
-                {selectedDevices.length === 0 && (
+                {/* {selectedDevices.length === 0 && (
                   <div className="text-xs text-rose-600">
                     请先在左侧勾选至少 1 台在线设备后再执行脚本。
                   </div>
-                )}
+                )} */}
               </div>
             )}
 

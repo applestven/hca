@@ -1,5 +1,5 @@
 import { lazy } from 'react'
-import { createHashRouter } from 'react-router-dom'
+import { createHashRouter, Navigate } from 'react-router-dom'
 import AppLayout from '@/layouts/AppLayout'
 
 const Login = lazy(() => import('@/views/login'))
@@ -15,11 +15,15 @@ const router = createHashRouter([
         children: [
             {
                 index: true,
-                element: <Home />
+                element: <Navigate to="/device-control" replace />
             },
             {
                 path: 'device-control',
                 element: <DeviceControl />
+            },
+            {
+                path: 'home',
+                element: <Home />
             },
             {
                 path: 'onboarding',

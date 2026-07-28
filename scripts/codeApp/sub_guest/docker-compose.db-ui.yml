@@ -1,0 +1,15 @@
+# Sub 获客 SQLite 网页管理
+# 浏览器: http://127.0.0.1:8088
+services:
+  sqlite-web:
+    image: coleifer/sqlite-web:latest
+    container_name: hca-sub-guest-db
+    ports:
+      - "8088:8080"
+    environment:
+      SQLITE_DATABASE: sub_guest.db
+    volumes:
+      - type: bind
+        source: ${SUB_GUEST_DIR:-C:/Users/a1829/AppData/Roaming/electron-temp/sub_guest}
+        target: /data
+    restart: "no"

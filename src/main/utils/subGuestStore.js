@@ -157,13 +157,18 @@ function defaultScriptsPayload() {
         name: '默认话术',
         variables: ['name'],
         steps: [
-          { order: 1, messages: ['哈哈', '你好'], delay: { min: 0.8, max: 1.5 } },
+          { order: 1, messages: ['哈哈', '你好'], delay: { min: 0.1, max: 0.3 } },
           {
             order: 2,
             messages: ['你经常玩这个吗', '好怕被人发现啊'],
-            delay: { min: 0.8, max: 1.5 }
+            delay: { min: 0.1, max: 0.3 }
           },
-          { order: 3, messages: ['哈哈哈'], delay: { min: 0.5, max: 1.2 } }
+          { order: 3, messages: ['哈哈哈'], delay: { min: 0.1, max: 0.4 } },
+          {
+            order: 4,
+            messages: ['不好意思 我旁边有人 不经常上这个'],
+            delay: { min: 0.1, max: 0.3 }
+          }
         ]
       }
     ]

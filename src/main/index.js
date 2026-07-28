@@ -192,7 +192,7 @@ function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 900,
-    height: 670,
+    height: 1080,
     show: false,
     autoHideMenuBar: true,
     // 隐藏原生标题栏，让页面使用自定义通用页眉
